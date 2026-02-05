@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  pingcode-mcp:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: pingcode-mcp-server
+    ports:
+      - "${HTTP_PORT:-3000}:3000"
+    environment:
+      - MOCK_MODE=${MOCK_MODE:-false}
+      - PINGCODE_BASE_URL=${PINGCODE_BASE_URL:-https://open.pingcode.com}
+      - PINGCODE_TOKEN=${PINGCODE_TOKEN}
+      - TOKEN_MODE=${TOKEN_MODE:-enterprise}
+      - TRANSPORT_MODE=${TRANSPORT_MODE:-http}
+      - HTTP_PORT=3000
+      - MCP_API_KEY=${MCP_API_KEY:-}
+      - TRUST_PROXY=${TRUST_PROXY:-true}
+      - CACHE_TTL_USERS=${CACHE_TTL_USERS:-3600}
+      - CACHE_TTL_WORK_ITEMS=${CACHE_TTL_WORK_ITEMS:-21600}
+      - RATE_LIMIT_PER_MIN=${RATE_LIMIT_PER_MIN:-200}
+      - MAX_PAGES=${MAX_PAGES:-200}
+      - TIMEZONE=${TIMEZONE:-Asia/Shanghai}
+      - NAME_MATCH_STRATEGY=${NAME_MATCH_STRATEGY:-best}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    restart: unless-stopped
+
+networks:
+  default:
+    name: pingcode-mcp-network
