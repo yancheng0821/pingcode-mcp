@@ -72,7 +72,7 @@ export interface UserWorkSummaryOutput {
 
 export interface UserWorkSummaryError {
   error: string;
-  code: 'USER_NOT_FOUND' | 'USER_AMBIGUOUS' | 'INVALID_TIME_RANGE' | 'INTERNAL_ERROR';
+  code: 'USER_NOT_FOUND' | 'USER_AMBIGUOUS' | 'INVALID_TIME_RANGE' | 'NO_DATA' | 'INTERNAL_ERROR';
   candidates?: Array<{
     id: string;
     name: string;
@@ -139,7 +139,17 @@ export async function userWorkSummary(input: UserWorkSummaryInput): Promise<User
       }
     );
 
-    // 4. 格式化输出
+    // 4. 检查是否有数据
+    if (result.data_quality.workloads_count === 0) {
+      const startDate = new Date(timeRange.start * 1000).toISOString().split('T')[0];
+      const endDate = new Date(timeRange.end * 1000).toISOString().split('T')[0];
+      return {
+        error: `用户 "${userResult.user.display_name}" 在 ${startDate} 至 ${endDate} 期间没有工时记录。`,
+        code: 'NO_DATA',
+      };
+    }
+
+    // 5. 格式化输出
     return formatOutput(result);
   } catch (error) {
     logger.error({ error, input }, 'user_work_summary failed');

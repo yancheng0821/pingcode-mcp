@@ -89,7 +89,7 @@ export interface TeamWorkSummaryOutput {
 
 export interface TeamWorkSummaryError {
   error: string;
-  code: 'INVALID_TIME_RANGE' | 'NO_USERS' | 'INTERNAL_ERROR';
+  code: 'INVALID_TIME_RANGE' | 'NO_USERS' | 'NO_DATA' | 'INTERNAL_ERROR';
 }
 
 export type TeamWorkSummaryResult = TeamWorkSummaryOutput | TeamWorkSummaryError;
@@ -132,7 +132,17 @@ export async function teamWorkSummary(input: TeamWorkSummaryInput): Promise<Team
       }
     );
 
-    // 4. 格式化输出
+    // 4. 检查是否有数据
+    if (result.data_quality.workloads_count === 0) {
+      const startDate = new Date(timeRange.start * 1000).toISOString().split('T')[0];
+      const endDate = new Date(timeRange.end * 1000).toISOString().split('T')[0];
+      return {
+        error: `在 ${startDate} 至 ${endDate} 期间没有找到任何工时记录。请确认时间范围是否正确，或者该时间段内是否有人填报过工时。`,
+        code: 'NO_DATA',
+      };
+    }
+
+    // 5. 格式化输出
     return formatOutput(result);
   } catch (error) {
     logger.error({ error, input }, 'team_work_summary failed');

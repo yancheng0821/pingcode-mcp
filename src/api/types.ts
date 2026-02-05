@@ -9,17 +9,27 @@ export interface PingCodeUser {
   job?: string;
 }
 
+export interface PingCodeWorkloadWorkItem {
+  id: string;
+  identifier: string;
+  title: string;
+  type?: string;
+}
+
 export interface PingCodeWorkload {
   id: string;
-  user_id: string;
-  work_item_id?: string;
-  project_id?: string;
-  hours: number;
-  date_at: number;        // Unix timestamp (seconds)
-  type_id?: string;
+  project: PingCodeProject;
+  work_item?: PingCodeWorkloadWorkItem;
+  duration: number;       // hours
   description?: string;
+  report_at: number;      // Unix timestamp (seconds)
+  report_by: {
+    id: string;
+    name: string;
+    display_name: string;
+  };
+  type?: string;
   created_at: number;
-  updated_at: number;
 }
 
 export interface PingCodeProject {
@@ -40,11 +50,10 @@ export interface PingCodeWorkItem {
 }
 
 export interface PaginatedResponse<T> {
-  data: T[];
+  values: T[];
   total: number;
   page_index: number;
   page_size: number;
-  has_more: boolean;
 }
 
 export interface ApiError {

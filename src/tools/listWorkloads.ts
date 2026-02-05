@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { listWorkloads as apiListWorkloads, type PrincipalType } from '../api/endpoints/workloads.js';
+import { listWorkloads as apiListWorkloads } from '../api/endpoints/workloads.js';
 import { userService } from '../services/userService.js';
 import { workItemService } from '../services/workItemService.js';
 import { parseTimeRange } from '../utils/timeUtils.js';
@@ -14,20 +14,16 @@ const DEFAULT_LIMIT = 100;
 // ============ Schema 定义 ============
 
 export const ListWorkloadsInputSchema = z.object({
-  // 新参数：principal_type 和 principal_id
-  principal_type: z.enum(['user', 'project', 'work_item']).optional(),
-  principal_id: z.string().optional(),
-  // 兼容旧参数：user 字段
+  // 用户过滤
   user: z.object({
     id: z.string().optional(),
     name: z.string().optional(),
   }).optional(),
+  // 时间范围
   time_range: z.object({
     start: z.string(),
     end: z.string(),
   }),
-  // API 过滤参数
-  report_by_id: z.string().optional(),
   // 本地过滤参数
   filter_project_id: z.string().optional(),
   filter_work_item_id: z.string().optional(),
@@ -53,6 +49,11 @@ export interface WorkloadRecord {
     title: string;
     project: { id: string; name: string };
   } | null;
+  project: {
+    id: string;
+    identifier: string;
+    name: string;
+  };
   description?: string;
 }
 
@@ -69,7 +70,7 @@ export interface ListWorkloadsOutput {
 
 export interface ListWorkloadsError {
   error: string;
-  code: 'INVALID_TIME_RANGE' | 'INVALID_PARAMS' | 'USER_NOT_FOUND' | 'AMBIGUOUS_USER' | 'INTERNAL_ERROR';
+  code: 'INVALID_TIME_RANGE' | 'INVALID_PARAMS' | 'USER_NOT_FOUND' | 'AMBIGUOUS_USER' | 'NO_DATA' | 'INTERNAL_ERROR';
   candidates?: Array<{ id: string; name: string; display_name: string }>;
 }
 
@@ -81,37 +82,18 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
   logger.info({ input }, 'list_workloads called');
 
   try {
-    // 1. 解析 principal_type 和 principal_id
-    let principalType: PrincipalType;
-    let principalId: string;
-    let resolvedUser: { id: string; name: string; display_name: string } | null = null;
-
-    if (input.principal_type && input.principal_id) {
-      // 使用新参数
-      principalType = input.principal_type;
-      principalId = input.principal_id;
-
-      // 如果是 user 类型，获取用户信息用于输出
-      if (principalType === 'user') {
-        const user = await userService.getUser(principalId);
-        if (user) {
-          resolvedUser = { id: user.id, name: user.name, display_name: user.display_name };
-        }
-      }
-    } else if (input.user) {
-      // 兼容旧参数：user 字段
-      principalType = 'user';
-
+    // 1. 解析用户参数（如果提供）
+    let filterUserId: string | undefined;
+    if (input.user) {
       if (input.user.id) {
-        principalId = input.user.id;
-        const user = await userService.getUser(principalId);
+        filterUserId = input.user.id;
+        const user = await userService.getUser(filterUserId);
         if (!user) {
           return {
-            error: `User not found: ${principalId}`,
+            error: `User not found: ${filterUserId}`,
             code: 'USER_NOT_FOUND',
           };
         }
-        resolvedUser = { id: user.id, name: user.name, display_name: user.display_name };
       } else if (input.user.name) {
         const resolved = await userService.resolveUser({ name: input.user.name });
         if (!resolved.user) {
@@ -131,19 +113,8 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
             code: 'USER_NOT_FOUND',
           };
         }
-        principalId = resolved.user.id;
-        resolvedUser = { id: resolved.user.id, name: resolved.user.name, display_name: resolved.user.display_name };
-      } else {
-        return {
-          error: 'Either user.id or user.name must be provided',
-          code: 'INVALID_PARAMS',
-        };
+        filterUserId = resolved.user.id;
       }
-    } else {
-      return {
-        error: 'Must provide principal_type/principal_id or user parameter',
-        code: 'INVALID_PARAMS',
-      };
     }
 
     // 2. 解析时间范围
@@ -159,42 +130,31 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
 
     // 3. 获取工时数据
     const result = await apiListWorkloads({
-      principalType,
-      principalId,
       startAt: timeRange.start,
       endAt: timeRange.end,
-      reportById: input.report_by_id,
+      userId: filterUserId,
+      projectId: input.filter_project_id,
     });
 
-    // 4. 获取工作项详情
+    // 4. 获取工作项详情（可选增强）
     const { workItems } = await workItemService.enrichWorkloadsWithWorkItems(result.workloads);
 
-    // 5. 如果是 project/work_item 类型，批量获取用户信息
-    let usersMap = new Map<string, { id: string; name: string; display_name: string }>();
-    if (principalType !== 'user') {
-      const userIds = [...new Set(result.workloads.map(w => w.user_id))];
-      const users = await userService.getUsersMap(userIds);
-      usersMap = new Map(
-        [...users.entries()].map(([id, u]) => [id, { id: u.id, name: u.name, display_name: u.display_name }])
-      );
-    }
-
-    // 6. 过滤
+    // 5. 过滤
     let workloads = result.workloads;
-
-    // 按项目过滤（本地）
-    if (input.filter_project_id) {
-      workloads = workloads.filter(w => {
-        if (w.project_id === input.filter_project_id) return true;
-        if (!w.work_item_id) return false;
-        const workItem = workItems.get(w.work_item_id);
-        return workItem?.project.id === input.filter_project_id;
-      });
-    }
 
     // 按工作项过滤（本地）
     if (input.filter_work_item_id) {
-      workloads = workloads.filter(w => w.work_item_id === input.filter_work_item_id);
+      workloads = workloads.filter(w => w.work_item?.id === input.filter_work_item_id);
+    }
+
+    // 6. 检查是否有数据
+    if (workloads.length === 0) {
+      const startDate = new Date(timeRange.start * 1000).toISOString().split('T')[0];
+      const endDate = new Date(timeRange.end * 1000).toISOString().split('T')[0];
+      return {
+        error: `在 ${startDate} 至 ${endDate} 期间没有找到工时记录。`,
+        code: 'NO_DATA',
+      };
     }
 
     // 7. 应用硬上限
@@ -205,27 +165,40 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
 
     // 8. 格式化输出
     const formattedWorkloads: WorkloadRecord[] = workloads.map(w => {
-      const workItem = w.work_item_id ? workItems.get(w.work_item_id) : null;
-      // 获取用户信息：优先用 resolvedUser（user 类型），否则从 usersMap 获取
-      const userInfo = resolvedUser || usersMap.get(w.user_id) || {
-        id: w.user_id,
-        name: w.user_id,
-        display_name: `[Unknown User: ${w.user_id}]`,
-      };
+      // 获取工作项详情（优先使用缓存的详细信息）
+      let workItem = null;
+      if (w.work_item) {
+        const cachedWorkItem = workItems.get(w.work_item.id);
+        workItem = {
+          id: w.work_item.id,
+          identifier: w.work_item.identifier,
+          title: w.work_item.title,
+          project: {
+            id: w.project.id,
+            name: w.project.name,
+          },
+        };
+        // 如果有缓存的详细信息，使用缓存的标题（可能更完整）
+        if (cachedWorkItem) {
+          workItem.title = cachedWorkItem.title;
+        }
+      }
+
       return {
         id: w.id,
-        date: formatTimestamp(w.date_at),
-        hours: w.hours,
-        user: userInfo,
-        work_item: workItem ? {
-          id: workItem.id,
-          identifier: workItem.identifier,
-          title: workItem.title,
-          project: {
-            id: workItem.project.id,
-            name: workItem.project.name,
-          },
-        } : null,
+        date: formatTimestamp(w.report_at),
+        hours: w.duration,
+        user: {
+          id: w.report_by.id,
+          name: w.report_by.name,
+          display_name: w.report_by.display_name,
+        },
+        work_item: workItem,
+        project: {
+          id: w.project.id,
+          identifier: w.project.identifier,
+          name: w.project.name,
+        },
         description: w.description,
       };
     });
@@ -255,35 +228,25 @@ export const listWorkloadsToolDefinition = {
   name: 'list_workloads',
   description: `获取工时记录列表。
 
-支持三种查询维度：
-- user: 按用户查询
-- project: 按项目查询
-- work_item: 按工作项查询
+支持按用户、项目、工作项过滤。
 
 参数说明：
-- principal_type + principal_id: 新参数，指定查询维度和 ID
-- user: 兼容旧参数，等同于 principal_type=user
+- user: 按用户过滤（可选）
+- time_range: 时间范围（必填）
+- filter_project_id: 按项目 ID 过滤（可选）
+- filter_work_item_id: 按工作项 ID 过滤（可选）
 
 返回：
-- workloads: 工时记录列表（含用户、工作项详情）
+- workloads: 工时记录列表（含用户、工作项、项目详情）
 - total: 匹配的总数
 - returned: 本次返回数量
 - data_quality: 数据质量指标`,
   inputSchema: {
     type: 'object',
     properties: {
-      principal_type: {
-        type: 'string',
-        enum: ['user', 'project', 'work_item'],
-        description: '查询维度：user（按用户）、project（按项目）、work_item（按工作项）',
-      },
-      principal_id: {
-        type: 'string',
-        description: '对应维度的 ID',
-      },
       user: {
         type: 'object',
-        description: '用户标识（兼容旧参数，等同于 principal_type=user）',
+        description: '按用户过滤（可选）',
         properties: {
           id: { type: 'string', description: '用户 ID' },
           name: { type: 'string', description: '用户名或显示名' },
@@ -298,17 +261,13 @@ export const listWorkloadsToolDefinition = {
         },
         required: ['start', 'end'],
       },
-      report_by_id: {
-        type: 'string',
-        description: '按填报人 ID 过滤（API 级过滤）',
-      },
       filter_project_id: {
         type: 'string',
-        description: '本地过滤：按项目 ID（可选）',
+        description: '按项目 ID 过滤（可选）',
       },
       filter_work_item_id: {
         type: 'string',
-        description: '本地过滤：按工作项 ID（可选）',
+        description: '按工作项 ID 过滤（可选）',
       },
       limit: {
         type: 'number',

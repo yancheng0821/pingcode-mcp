@@ -3,19 +3,14 @@ import { config } from '../../config/index.js';
 import { logger } from '../../utils/logger.js';
 import { metrics } from '../../utils/metrics.js';
 import { splitTimeRange, isTimeRangeExceedsThreeMonths } from '../../utils/timeUtils.js';
-import { generateMockWorkloads } from '../../mock/data.js';
 import type { PingCodeWorkload, PaginatedResponse } from '../types.js';
 
-export type PrincipalType = 'user' | 'project' | 'work_item';
-
 export interface ListWorkloadsParams {
-  principalType: PrincipalType;
-  principalId: string;
   startAt: number;  // Unix timestamp (seconds)
   endAt: number;    // Unix timestamp (seconds)
-  reportById?: string;  // Optional: filter by reporter
+  userId?: string;  // Optional: filter by reporter (client-side)
+  projectId?: string;  // Optional: filter by project (client-side)
   pageSize?: number;
-  pageIndex?: number;
 }
 
 export interface WorkloadsResult {
@@ -27,7 +22,7 @@ export interface WorkloadsResult {
 
 /**
  * 获取工时记录
- * GET /v1/workloads
+ * GET /v1/project/workloads
  *
  * 自动处理：
  * - 时间分片（>3个月自动拆分）
@@ -35,38 +30,7 @@ export interface WorkloadsResult {
  * - 去重（以 workload_id 为主键）
  */
 export async function listWorkloads(params: ListWorkloadsParams): Promise<WorkloadsResult> {
-  const {
-    principalType,
-    principalId,
-    startAt,
-    endAt,
-  } = params;
-
-  // Mock 模式
-  if (config.mockMode) {
-    logger.debug({ principalType, principalId }, 'Using mock data for listWorkloads');
-    const needsSlicing = isTimeRangeExceedsThreeMonths(startAt, endAt);
-
-    if (principalType === 'user') {
-      const workloads = generateMockWorkloads(principalId, startAt, endAt);
-      return {
-        workloads,
-        totalCount: workloads.length,
-        timeSliced: needsSlicing,
-        paginationTruncated: false,
-      };
-    }
-
-    // 其他类型暂时返回空
-    return {
-      workloads: [],
-      totalCount: 0,
-      timeSliced: needsSlicing,
-      paginationTruncated: false,
-    };
-  }
-
-  const { reportById, pageSize = config.pagination.pageSize } = params;
+  const { startAt, endAt, userId, projectId, pageSize = config.pagination.pageSize } = params;
 
   const needsSlicing = isTimeRangeExceedsThreeMonths(startAt, endAt);
   const timeChunks = needsSlicing ? splitTimeRange(startAt, endAt) : [[startAt, endAt]];
@@ -75,8 +39,8 @@ export async function listWorkloads(params: ListWorkloadsParams): Promise<Worklo
   metrics.recordTimeSlice(timeChunks.length);
 
   logger.info({
-    principalType,
-    principalId,
+    userId,
+    projectId,
     startAt,
     endAt,
     needsSlicing,
@@ -89,20 +53,17 @@ export async function listWorkloads(params: ListWorkloadsParams): Promise<Worklo
 
   // Process each time chunk
   for (const [chunkStart, chunkEnd] of timeChunks) {
-    let currentPage = 1;
+    let currentPage = 0;  // page_index starts from 0
     let hasMore = true;
 
     while (hasMore) {
       try {
         const response = await apiClient.request<PaginatedResponse<PingCodeWorkload>>(
-          '/v1/workloads',
+          '/v1/project/workloads',
           {
             params: {
-              principal_type: principalType,
-              principal_id: principalId,
               start_at: chunkStart,
               end_at: chunkEnd,
-              report_by_id: reportById,
               page_size: pageSize,
               page_index: currentPage,
             },
@@ -110,14 +71,15 @@ export async function listWorkloads(params: ListWorkloadsParams): Promise<Worklo
         );
 
         // Deduplicate by workload id
-        for (const workload of response.data) {
+        for (const workload of response.values) {
           if (!seenIds.has(workload.id)) {
             seenIds.add(workload.id);
             allWorkloads.push(workload);
           }
         }
 
-        hasMore = response.has_more;
+        // Calculate hasMore from pagination fields
+        hasMore = (response.page_index + 1) * response.page_size < response.total;
         currentPage++;
 
         // Safety limit
@@ -145,15 +107,27 @@ export async function listWorkloads(params: ListWorkloadsParams): Promise<Worklo
     }
   }
 
+  // Client-side filtering
+  let filteredWorkloads = allWorkloads;
+
+  if (userId) {
+    filteredWorkloads = filteredWorkloads.filter(w => w.report_by.id === userId);
+  }
+
+  if (projectId) {
+    filteredWorkloads = filteredWorkloads.filter(w => w.project.id === projectId);
+  }
+
   logger.info({
     totalWorkloads: allWorkloads.length,
+    filteredWorkloads: filteredWorkloads.length,
     timeSliced: needsSlicing,
     paginationTruncated,
   }, 'Workloads fetch completed');
 
   return {
-    workloads: allWorkloads,
-    totalCount: allWorkloads.length,
+    workloads: filteredWorkloads,
+    totalCount: filteredWorkloads.length,
     timeSliced: needsSlicing,
     paginationTruncated,
   };
@@ -168,10 +142,9 @@ export async function listUserWorkloads(
   endAt: number
 ): Promise<WorkloadsResult> {
   return listWorkloads({
-    principalType: 'user',
-    principalId: userId,
     startAt,
     endAt,
+    userId,
   });
 }
 
@@ -184,52 +157,35 @@ export async function listProjectWorkloads(
   endAt: number
 ): Promise<WorkloadsResult> {
   return listWorkloads({
-    principalType: 'project',
-    principalId: projectId,
     startAt,
     endAt,
+    projectId,
   });
 }
 
 /**
  * 批量获取多个用户的工时记录
- * 并行请求以提高效率
+ * 优化：只拉取一次全部数据，然后按用户分组
  */
 export async function listWorkloadsForUsers(
   userIds: string[],
   startAt: number,
-  endAt: number,
-  concurrency: number = 5
+  endAt: number
 ): Promise<Map<string, WorkloadsResult>> {
+  // 拉取时间范围内的所有工时记录
+  const allResult = await listWorkloads({ startAt, endAt });
+
   const results = new Map<string, WorkloadsResult>();
 
-  // Process in batches for concurrency control
-  for (let i = 0; i < userIds.length; i += concurrency) {
-    const batch = userIds.slice(i, i + concurrency);
-
-    const batchResults = await Promise.all(
-      batch.map(async (userId) => {
-        try {
-          const result = await listUserWorkloads(userId, startAt, endAt);
-          return { userId, result };
-        } catch (error) {
-          logger.error({ userId, error }, 'Failed to fetch user workloads');
-          return {
-            userId,
-            result: {
-              workloads: [],
-              totalCount: 0,
-              timeSliced: false,
-              paginationTruncated: true,
-            },
-          };
-        }
-      })
-    );
-
-    for (const { userId, result } of batchResults) {
-      results.set(userId, result);
-    }
+  // 按用户分组
+  for (const userId of userIds) {
+    const userWorkloads = allResult.workloads.filter(w => w.report_by.id === userId);
+    results.set(userId, {
+      workloads: userWorkloads,
+      totalCount: userWorkloads.length,
+      timeSliced: allResult.timeSliced,
+      paginationTruncated: allResult.paginationTruncated,
+    });
   }
 
   return results;

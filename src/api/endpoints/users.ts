@@ -1,7 +1,6 @@
 import { apiClient } from '../client.js';
 import { config } from '../../config/index.js';
 import { logger } from '../../utils/logger.js';
-import { mockUsers } from '../../mock/data.js';
 import type { PingCodeUser, PaginatedResponse } from '../types.js';
 
 export interface ListUsersParams {
@@ -20,23 +19,7 @@ export interface UserMatch {
  * GET /v1/directory/users
  */
 export async function listUsers(params: ListUsersParams = {}): Promise<PingCodeUser[]> {
-  const { keyword } = params;
-
-  // Mock 模式
-  if (config.mockMode) {
-    logger.debug('Using mock data for listUsers');
-    let users = [...mockUsers];
-    if (keyword) {
-      const lowerKeyword = keyword.toLowerCase();
-      users = users.filter(u =>
-        u.name?.toLowerCase().includes(lowerKeyword) ||
-        u.display_name?.toLowerCase().includes(lowerKeyword)
-      );
-    }
-    return users;
-  }
-
-  const { pageSize = 100, pageIndex = 1 } = params;
+  const { keyword, pageSize = 100, pageIndex = 0 } = params;
 
   // 不缓存用户列表，确保能查到新加入的员工
   const allUsers: PingCodeUser[] = [];
@@ -54,8 +37,9 @@ export async function listUsers(params: ListUsersParams = {}): Promise<PingCodeU
       }
     );
 
-    allUsers.push(...response.data);
-    hasMore = response.has_more;
+    allUsers.push(...response.values);
+    // Calculate hasMore from pagination fields
+    hasMore = (response.page_index + 1) * response.page_size < response.total;
     currentPage++;
 
     // Safety limit

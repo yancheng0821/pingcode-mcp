@@ -313,20 +313,25 @@ export class WorkloadService {
 
       // 构建该用户的明细
       for (const w of result.workloads) {
-        const workItem = w.work_item_id ? workItems.get(w.work_item_id) || null : null;
-        if (w.work_item_id && !workItem) {
-          totalMissingWorkItemCount++;
+        // 使用 workload 中嵌入的 work_item 信息，或尝试从缓存获取更详细的信息
+        const embeddedWorkItem = w.work_item;
+        let workItem: WorkItemInfo | null = null;
+        if (embeddedWorkItem) {
+          const cachedWorkItem = workItems.get(embeddedWorkItem.id);
+          workItem = cachedWorkItem || {
+            id: embeddedWorkItem.id,
+            identifier: embeddedWorkItem.identifier,
+            title: embeddedWorkItem.title,
+            type: embeddedWorkItem.type,
+            project: w.project,
+          };
         }
-        // 获取项目信息：优先从 workItem 获取，否则用 project_id
-        const project = workItem?.project || (w.project_id ? {
-          id: w.project_id,
-          identifier: '',
-          name: `[Unknown Project]`,
-        } : null);
+        // 项目信息直接从 workload 获取
+        const project = w.project;
         allDetails.push({
-          date: formatTimestamp(w.date_at),
+          date: formatTimestamp(w.report_at),
           workload_id: w.id,
-          hours: w.hours,
+          hours: w.duration,
           user,
           work_item: workItem,
           project,
@@ -422,53 +427,48 @@ export class WorkloadService {
     const monthHours = new Map<string, number>();
 
     for (const workload of workloads) {
-      const hours = workload.hours || 0;
+      const hours = workload.duration || 0;
       totalHours += hours;
 
       // 按日期
-      const date = formatTimestamp(workload.date_at);
+      const date = formatTimestamp(workload.report_at);
       dayHours.set(date, (dayHours.get(date) || 0) + hours);
 
       // 按周
-      const week = this.getWeekKey(workload.date_at);
+      const week = this.getWeekKey(workload.report_at);
       weekHours.set(week, (weekHours.get(week) || 0) + hours);
 
       // 按月
       const month = date.substring(0, 7);  // "2026-01"
       monthHours.set(month, (monthHours.get(month) || 0) + hours);
 
-      // 按工作项
-      if (workload.work_item_id) {
-        const workItem = workItems.get(workload.work_item_id);
-        if (workItem) {
-          const existing = workItemHours.get(workItem.id);
-          if (existing) {
-            existing.hours += hours;
-          } else {
-            workItemHours.set(workItem.id, { workItem, hours });
-          }
+      // 按项目（直接从 workload.project 获取）
+      const projectId = workload.project.id;
+      const existingProject = projectHours.get(projectId);
+      if (existingProject) {
+        existingProject.hours += hours;
+      } else {
+        projectHours.set(projectId, { project: workload.project, hours });
+      }
 
-          // 按项目（从工作项获取）
-          const projectId = workItem.project.id;
-          const existingProject = projectHours.get(projectId);
-          if (existingProject) {
-            existingProject.hours += hours;
-          } else {
-            projectHours.set(projectId, { project: workItem.project, hours });
-          }
-        }
-      } else if (workload.project_id) {
-        // 没有 work_item_id 但有 project_id，直接按 project_id 聚合
-        const projectId = workload.project_id;
-        const existingProject = projectHours.get(projectId);
-        if (existingProject) {
-          existingProject.hours += hours;
+      // 按工作项
+      if (workload.work_item) {
+        const embeddedWorkItem = workload.work_item;
+        // 优先使用缓存的详细信息，否则使用嵌入的基本信息
+        const cachedWorkItem = workItems.get(embeddedWorkItem.id);
+        const workItem: WorkItemInfo = cachedWorkItem || {
+          id: embeddedWorkItem.id,
+          identifier: embeddedWorkItem.identifier,
+          title: embeddedWorkItem.title,
+          type: embeddedWorkItem.type,
+          project: workload.project,
+        };
+
+        const existing = workItemHours.get(workItem.id);
+        if (existing) {
+          existing.hours += hours;
         } else {
-          // 创建一个基本的项目信息（没有完整详情，标记为未知）
-          projectHours.set(projectId, {
-            project: { id: projectId, identifier: '', name: `[Unknown Project: ${projectId}]` },
-            hours,
-          });
+          workItemHours.set(workItem.id, { workItem, hours });
         }
       }
     }
@@ -505,39 +505,42 @@ export class WorkloadService {
     workItems: Map<string, WorkItemInfo>
   ): WorkloadDetail[] {
     return workloads
-      .map(w => ({
-        date: formatTimestamp(w.date_at),
-        workload_id: w.id,
-        hours: w.hours,
-        work_item: w.work_item_id ? workItems.get(w.work_item_id) || null : null,
-        description: w.description,
-      }))
+      .map(w => {
+        let workItem: WorkItemInfo | null = null;
+        if (w.work_item) {
+          const cachedWorkItem = workItems.get(w.work_item.id);
+          workItem = cachedWorkItem || {
+            id: w.work_item.id,
+            identifier: w.work_item.identifier,
+            title: w.work_item.title,
+            type: w.work_item.type,
+            project: w.project,
+          };
+        }
+        return {
+          date: formatTimestamp(w.report_at),
+          workload_id: w.id,
+          hours: w.duration,
+          work_item: workItem,
+          description: w.description,
+        };
+      })
       .sort((a, b) => b.date.localeCompare(a.date));  // 按日期倒序
   }
 
   /**
    * 按项目过滤工时
-   * 支持两种情况：
-   * 1. 通过 work_item 的 project.id 匹配
-   * 2. 通过 workload 的 project_id 直接匹配（无 work_item 的情况）
    */
   private filterByProject(
     workloadsMap: Map<string, WorkloadsResult>,
-    workItems: Map<string, WorkItemInfo>,
+    _workItems: Map<string, WorkItemInfo>,
     projectId: string
   ): Map<string, WorkloadsResult> {
     const filtered = new Map<string, WorkloadsResult>();
 
     for (const [userId, result] of workloadsMap) {
-      const filteredWorkloads = result.workloads.filter(w => {
-        // 优先通过 work_item 的 project 判断
-        if (w.work_item_id) {
-          const workItem = workItems.get(w.work_item_id);
-          return workItem?.project.id === projectId;
-        }
-        // 没有 work_item 时，直接用 workload 的 project_id
-        return w.project_id === projectId;
-      });
+      // 直接使用 workload.project.id 进行过滤
+      const filteredWorkloads = result.workloads.filter(w => w.project.id === projectId);
 
       filtered.set(userId, {
         ...result,
@@ -578,8 +581,8 @@ export class WorkloadService {
       // 按日期汇总
       const dayMap = new Map<string, number>();
       for (const w of result.workloads) {
-        const date = formatTimestamp(w.date_at);
-        dayMap.set(date, (dayMap.get(date) || 0) + w.hours);
+        const date = formatTimestamp(w.report_at);
+        dayMap.set(date, (dayMap.get(date) || 0) + w.duration);
       }
 
       const hoursPerDay = dates.map(d => dayMap.get(d) || 0);

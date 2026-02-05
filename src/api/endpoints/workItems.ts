@@ -2,7 +2,6 @@ import { apiClient, PingCodeApiError } from '../client.js';
 import { cache, CacheKeys } from '../../cache/index.js';
 import { config } from '../../config/index.js';
 import { logger } from '../../utils/logger.js';
-import { getMockWorkItem } from '../../mock/data.js';
 import type { PingCodeWorkItem } from '../types.js';
 
 /**
@@ -10,12 +9,6 @@ import type { PingCodeWorkItem } from '../types.js';
  * GET /v1/project/work_items/{project_work_item_id}
  */
 export async function getWorkItem(workItemId: string): Promise<PingCodeWorkItem | null> {
-  // Mock 模式
-  if (config.mockMode) {
-    logger.debug({ workItemId }, 'Using mock data for getWorkItem');
-    return getMockWorkItem(workItemId) || null;
-  }
-
   // Try cache first
   const cached = await cache.get<PingCodeWorkItem>(CacheKeys.workItem(workItemId));
   if (cached) {
@@ -62,20 +55,6 @@ export async function getWorkItemsBatch(
   const uniqueIds = [...new Set(workItemIds)];
   const result = new Map<string, PingCodeWorkItem>();
   let missingCount = 0;
-
-  // Mock 模式
-  if (config.mockMode) {
-    logger.debug({ count: uniqueIds.length }, 'Using mock data for getWorkItemsBatch');
-    for (const id of uniqueIds) {
-      const item = getMockWorkItem(id);
-      if (item) {
-        result.set(id, item);
-      } else {
-        missingCount++;
-      }
-    }
-    return { items: result, missingCount };
-  }
 
   // Try cache first
   const cacheKeys = uniqueIds.map(id => CacheKeys.workItem(id));
@@ -165,13 +144,13 @@ async function fetchWorkItemDirect(workItemId: string): Promise<PingCodeWorkItem
  * 从工时记录中提取并获取所有关联的工作项
  */
 export async function getWorkItemsFromWorkloads(
-  workloads: Array<{ work_item_id?: string }>
+  workloads: Array<{ work_item?: { id: string } }>
 ): Promise<{
   items: Map<string, PingCodeWorkItem>;
   missingCount: number;
 }> {
   const workItemIds = workloads
-    .map(w => w.work_item_id)
+    .map(w => w.work_item?.id)
     .filter((id): id is string => !!id);
 
   return getWorkItemsBatch(workItemIds);

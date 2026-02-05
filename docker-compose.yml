@@ -9,7 +9,6 @@ services:
     ports:
       - "${HTTP_PORT:-3000}:3000"
     environment:
-      - MOCK_MODE=${MOCK_MODE:-false}
       - PINGCODE_BASE_URL=${PINGCODE_BASE_URL:-https://open.pingcode.com}
       - PINGCODE_TOKEN=${PINGCODE_TOKEN}
       - TOKEN_MODE=${TOKEN_MODE:-enterprise}

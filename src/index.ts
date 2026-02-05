@@ -126,9 +126,17 @@ function createMcpServer(): Server {
 }
 
 async function main() {
+  // HTTP 模式强制要求 API Key
+  if (config.server.transportMode === 'http' && !config.auth.apiKey) {
+    console.error('Error: MCP_API_KEY is required for HTTP mode');
+    console.error('Please set MCP_API_KEY environment variable or use stdio mode');
+    process.exit(1);
+  }
+
   logger.info({
     transportMode: config.server.transportMode,
     timezone: config.timezone,
+    authEnabled: !!config.auth.apiKey,
   }, 'Starting PingCode MCP Server');
 
   // Connect to cache

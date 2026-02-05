@@ -2,13 +2,10 @@ import 'dotenv/config';
 import { z } from 'zod';
 
 const ConfigSchema = z.object({
-  // Mock mode
-  mockMode: z.boolean().default(false),
-
   // PingCode API
   pingcode: z.object({
     baseUrl: z.string().url().default('https://open.pingcode.com'),
-    token: z.string().default(''),  // 允许空（mock 模式下）
+    token: z.string().min(1, 'PINGCODE_TOKEN is required'),
     tokenMode: z.enum(['enterprise', 'user']).default('enterprise'),
   }),
 
@@ -57,7 +54,6 @@ export type Config = z.infer<typeof ConfigSchema>;
 
 function loadConfig(): Config {
   const raw = {
-    mockMode: process.env.MOCK_MODE === 'true',
     pingcode: {
       baseUrl: process.env.PINGCODE_BASE_URL,
       token: process.env.PINGCODE_TOKEN,
