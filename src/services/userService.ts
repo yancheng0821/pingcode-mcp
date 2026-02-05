@@ -12,6 +12,7 @@ export interface UserInfo {
   display_name: string;
   email?: string;
   department?: string;
+  job?: string;
 }
 
 export interface UserMatchResult {
@@ -110,6 +111,7 @@ export class UserService {
       display_name: user.display_name,
       email: user.email,
       department: user.department,
+      job: user.job,
     };
   }
 }

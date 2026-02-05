@@ -29,6 +29,7 @@ export interface ListUsersOutput {
     display_name: string;
     email?: string;
     department?: string;
+    job?: string;
   }>;
   total: number;
   page_index: number;
@@ -85,6 +86,7 @@ export async function listUsers(input: ListUsersInput): Promise<ListUsersResult>
         display_name: u.display_name,
         email: u.email,
         department: u.department,
+        job: u.job,
       })),
       total,
       page_index: pageIndex,

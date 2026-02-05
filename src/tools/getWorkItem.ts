@@ -19,10 +19,16 @@ export interface GetWorkItemOutput {
     title: string;
     state?: string;
     type?: string;
+    assignee?: {
+      id: string;
+      name: string;
+      display_name: string;
+    };
     project: {
       id: string;
       identifier: string;
       name: string;
+      type?: string;
     };
   };
 }
@@ -56,10 +62,16 @@ export async function getWorkItem(input: GetWorkItemInput): Promise<GetWorkItemR
         title: workItem.title,
         state: workItem.state,
         type: workItem.type,
+        assignee: workItem.assignee ? {
+          id: workItem.assignee.id,
+          name: workItem.assignee.name,
+          display_name: workItem.assignee.display_name,
+        } : undefined,
         project: {
           id: workItem.project.id,
           identifier: workItem.project.identifier,
           name: workItem.project.name,
+          type: workItem.project.type,
         },
       },
     };

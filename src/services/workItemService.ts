@@ -13,9 +13,15 @@ export interface WorkItemInfo {
     id: string;
     identifier: string;
     name: string;
+    type?: string;
   };
   state?: string;
   type?: string;
+  assignee?: {
+    id: string;
+    name: string;
+    display_name: string;
+  };
 }
 
 export interface ProjectInfo {
@@ -99,9 +105,15 @@ export class WorkItemService {
         id: item.project.id,
         identifier: item.project.identifier,
         name: item.project.name,
+        type: item.project.type,
       },
       state: item.state,
       type: item.type,
+      assignee: item.assignee ? {
+        id: item.assignee.id,
+        name: item.assignee.name,
+        display_name: item.assignee.display_name,
+      } : undefined,
     };
   }
 }

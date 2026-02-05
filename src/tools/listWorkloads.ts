@@ -55,6 +55,9 @@ export interface WorkloadRecord {
     name: string;
   };
   description?: string;
+  // 原始字段
+  type?: string;
+  created_at: number;
 }
 
 export interface ListWorkloadsOutput {
@@ -200,6 +203,9 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
           name: w.project.name,
         },
         description: w.description,
+        // 原始字段
+        type: w.type,
+        created_at: w.created_at,
       };
     });
 
