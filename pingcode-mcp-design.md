@@ -113,7 +113,7 @@ pingcode-mcp/
 │   └── config/               # 配置管理
 │       └── index.ts
 ├── tests/
-│   └── regression.mjs        # 回归测试（24个测试用例）
+│   └── regression.mjs        # 回归测试（30个测试用例）
 ├── docker/
 │   └── Dockerfile            # MCP Server 镜像
 ├── docker-compose.yml
