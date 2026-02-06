@@ -331,18 +331,24 @@ export class WorkloadService {
         // 使用 workload 中嵌入的 work_item 信息，或尝试从缓存获取更详细的信息
         const embeddedWorkItem = w.work_item;
         let workItem: WorkItemInfo | null = null;
+        let project: ProjectInfo | null = null;
+
         if (embeddedWorkItem) {
           const cachedWorkItem = workItems.get(embeddedWorkItem.id);
-          workItem = cachedWorkItem || {
-            id: embeddedWorkItem.id,
-            identifier: embeddedWorkItem.identifier,
-            title: embeddedWorkItem.title,
-            type: embeddedWorkItem.type,
-            project: w.project,
-          };
+          if (cachedWorkItem) {
+            workItem = cachedWorkItem;
+            project = cachedWorkItem.project;
+          } else {
+            // 没有缓存的工作项信息，使用嵌入的基本信息
+            workItem = {
+              id: embeddedWorkItem.id,
+              identifier: embeddedWorkItem.identifier,
+              title: embeddedWorkItem.title,
+              type: embeddedWorkItem.type,
+              project: { id: '', identifier: '', name: 'Unknown' },
+            };
+          }
         }
-        // 项目信息直接从 workload 获取
-        const project = w.project;
         allDetails.push({
           date: formatTimestamp(w.report_at),
           workload_id: w.id,
@@ -465,13 +471,20 @@ export class WorkloadService {
       const workloadType = workload.type || 'unknown';
       typeHours.set(workloadType, (typeHours.get(workloadType) || 0) + hours);
 
-      // 按项目（直接从 workload.project 获取）
-      const projectId = workload.project.id;
-      const existingProject = projectHours.get(projectId);
-      if (existingProject) {
-        existingProject.hours += hours;
-      } else {
-        projectHours.set(projectId, { project: workload.project, hours });
+      // 按项目（通过 work_item 获取 project 信息）
+      let project: ProjectInfo | undefined;
+      if (workload.work_item) {
+        const cachedWorkItem = workItems.get(workload.work_item.id);
+        project = cachedWorkItem?.project;
+      }
+
+      if (project) {
+        const existingProject = projectHours.get(project.id);
+        if (existingProject) {
+          existingProject.hours += hours;
+        } else {
+          projectHours.set(project.id, { project, hours });
+        }
       }
 
       // 按工作项
@@ -484,7 +497,7 @@ export class WorkloadService {
           identifier: embeddedWorkItem.identifier,
           title: embeddedWorkItem.title,
           type: embeddedWorkItem.type,
-          project: workload.project,
+          project: project || { id: '', identifier: '', name: 'Unknown' },
         };
 
         const existing = workItemHours.get(workItem.id);
@@ -536,13 +549,17 @@ export class WorkloadService {
         let workItem: WorkItemInfo | null = null;
         if (w.work_item) {
           const cachedWorkItem = workItems.get(w.work_item.id);
-          workItem = cachedWorkItem || {
-            id: w.work_item.id,
-            identifier: w.work_item.identifier,
-            title: w.work_item.title,
-            type: w.work_item.type,
-            project: w.project,
-          };
+          if (cachedWorkItem) {
+            workItem = cachedWorkItem;
+          } else {
+            workItem = {
+              id: w.work_item.id,
+              identifier: w.work_item.identifier,
+              title: w.work_item.title,
+              type: w.work_item.type,
+              project: { id: '', identifier: '', name: 'Unknown' },
+            };
+          }
         }
         return {
           date: formatTimestamp(w.report_at),
@@ -560,14 +577,18 @@ export class WorkloadService {
    */
   private filterByProject(
     workloadsMap: Map<string, WorkloadsResult>,
-    _workItems: Map<string, WorkItemInfo>,
+    workItems: Map<string, WorkItemInfo>,
     projectId: string
   ): Map<string, WorkloadsResult> {
     const filtered = new Map<string, WorkloadsResult>();
 
     for (const [userId, result] of workloadsMap) {
-      // 直接使用 workload.project.id 进行过滤
-      const filteredWorkloads = result.workloads.filter(w => w.project.id === projectId);
+      // 通过 work_item 获取 project.id 进行过滤
+      const filteredWorkloads = result.workloads.filter(w => {
+        if (!w.work_item) return false;
+        const workItem = workItems.get(w.work_item.id);
+        return workItem?.project?.id === projectId;
+      });
 
       filtered.set(userId, {
         ...result,

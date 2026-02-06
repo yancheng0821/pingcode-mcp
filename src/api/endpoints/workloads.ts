@@ -3,13 +3,16 @@ import { config } from '../../config/index.js';
 import { logger } from '../../utils/logger.js';
 import { metrics } from '../../utils/metrics.js';
 import { splitTimeRange, isTimeRangeExceedsThreeMonths } from '../../utils/timeUtils.js';
-import type { PingCodeWorkload, PaginatedResponse } from '../types.js';
+import type { PingCodeWorkload, RawPingCodeWorkload, PaginatedResponse } from '../types.js';
 
 export interface ListWorkloadsParams {
   startAt: number;  // Unix timestamp (seconds)
   endAt: number;    // Unix timestamp (seconds)
-  userId?: string;  // Optional: filter by reporter (client-side)
-  projectId?: string;  // Optional: filter by project (client-side)
+  userId?: string;  // Optional: filter by reporter (server-side via report_by_id)
+  projectId?: string;  // Optional: filter by project (server-side via pilot_id)
+  // API 原生参数（仅 work_item 类型，其他类型由 Tool 层转换）
+  principalType?: 'work_item';
+  principalId?: string;
   pageSize?: number;
 }
 
@@ -21,8 +24,39 @@ export interface WorkloadsResult {
 }
 
 /**
+ * 将原始 API 响应转换为标准化格式
+ */
+function transformWorkload(raw: RawPingCodeWorkload): PingCodeWorkload {
+  return {
+    id: raw.id,
+    // project 需要后续通过 work_item 关联获取
+    project: undefined,
+    work_item: raw.principal && raw.principal_type === 'work_item' ? {
+      id: raw.principal.id,
+      identifier: raw.principal.identifier,
+      title: raw.principal.title,
+      type: raw.principal.type,
+    } : undefined,
+    duration: raw.duration,
+    description: raw.description,
+    report_at: raw.report_at,
+    report_by: {
+      id: raw.report_by.id,
+      name: raw.report_by.name,
+      display_name: raw.report_by.display_name,
+    },
+    type: raw.type?.name,
+    created_at: raw.created_at,
+  };
+}
+
+/**
  * 获取工时记录
- * GET /v1/project/workloads
+ * GET /v1/workloads
+ *
+ * 支持服务端过滤：
+ * - report_by_id: 按填报人过滤
+ * - pilot_id + principal_type: 按项目过滤
  *
  * 自动处理：
  * - 时间分片（>3个月自动拆分）
@@ -30,7 +64,7 @@ export interface WorkloadsResult {
  * - 去重（以 workload_id 为主键）
  */
 export async function listWorkloads(params: ListWorkloadsParams): Promise<WorkloadsResult> {
-  const { startAt, endAt, userId, projectId, pageSize = config.pagination.pageSize } = params;
+  const { startAt, endAt, userId, projectId, principalType, principalId, pageSize = config.pagination.pageSize } = params;
 
   const needsSlicing = isTimeRangeExceedsThreeMonths(startAt, endAt);
   const timeChunks = needsSlicing ? splitTimeRange(startAt, endAt) : [[startAt, endAt]];
@@ -58,23 +92,43 @@ export async function listWorkloads(params: ListWorkloadsParams): Promise<Worklo
 
     while (hasMore) {
       try {
-        const response = await apiClient.request<PaginatedResponse<PingCodeWorkload>>(
-          '/v1/project/workloads',
+        // 构建请求参数
+        const requestParams: Record<string, string | number | undefined> = {
+          start_at: chunkStart,
+          end_at: chunkEnd,
+          page_size: pageSize,
+          page_index: currentPage,
+        };
+
+        // 服务端过滤：按用户
+        if (userId) {
+          requestParams.report_by_id = userId;
+        }
+
+        // 服务端过滤：按项目（需要同时指定 principal_type）
+        if (projectId) {
+          requestParams.pilot_id = projectId;
+          requestParams.principal_type = principalType || 'work_item';
+        }
+
+        // PRD 参数：principal_type + principal_id（按工作项/想法/用例查询）
+        if (principalType && principalId) {
+          requestParams.principal_type = principalType;
+          requestParams.principal_id = principalId;
+        }
+
+        const response = await apiClient.request<PaginatedResponse<RawPingCodeWorkload>>(
+          '/v1/workloads',
           {
-            params: {
-              start_at: chunkStart,
-              end_at: chunkEnd,
-              page_size: pageSize,
-              page_index: currentPage,
-            },
+            params: requestParams,
           }
         );
 
-        // Deduplicate by workload id
-        for (const workload of response.values) {
-          if (!seenIds.has(workload.id)) {
-            seenIds.add(workload.id);
-            allWorkloads.push(workload);
+        // 转换并去重
+        for (const rawWorkload of response.values) {
+          if (!seenIds.has(rawWorkload.id)) {
+            seenIds.add(rawWorkload.id);
+            allWorkloads.push(transformWorkload(rawWorkload));
           }
         }
 
@@ -107,27 +161,15 @@ export async function listWorkloads(params: ListWorkloadsParams): Promise<Worklo
     }
   }
 
-  // Client-side filtering
-  let filteredWorkloads = allWorkloads;
-
-  if (userId) {
-    filteredWorkloads = filteredWorkloads.filter(w => w.report_by.id === userId);
-  }
-
-  if (projectId) {
-    filteredWorkloads = filteredWorkloads.filter(w => w.project.id === projectId);
-  }
-
   logger.info({
     totalWorkloads: allWorkloads.length,
-    filteredWorkloads: filteredWorkloads.length,
     timeSliced: needsSlicing,
     paginationTruncated,
   }, 'Workloads fetch completed');
 
   return {
-    workloads: filteredWorkloads,
-    totalCount: filteredWorkloads.length,
+    workloads: allWorkloads,
+    totalCount: allWorkloads.length,
     timeSliced: needsSlicing,
     paginationTruncated,
   };
@@ -165,14 +207,14 @@ export async function listProjectWorkloads(
 
 /**
  * 批量获取多个用户的工时记录
- * 优化：只拉取一次全部数据，然后按用户分组
+ * 策略：一次拉取全部数据，本地按用户分组（避免 N 次 API 调用）
  */
 export async function listWorkloadsForUsers(
   userIds: string[],
   startAt: number,
   endAt: number
 ): Promise<Map<string, WorkloadsResult>> {
-  // 拉取时间范围内的所有工时记录
+  // 拉取时间范围内的所有工时记录（不带用户过滤）
   const allResult = await listWorkloads({ startAt, endAt });
 
   const results = new Map<string, WorkloadsResult>();

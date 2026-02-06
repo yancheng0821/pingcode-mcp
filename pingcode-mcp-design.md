@@ -70,8 +70,7 @@
                       ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    PingCode Open API                        │
-│   /v1/directory/users  /v1/project/workloads               │
-│   /v1/project/work_items                                   │
+│   /v1/directory/users  /v1/workloads  /v1/project/work_items│
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -264,7 +263,43 @@ function splitTimeRange(startAt: number, endAt: number): TimeChunk[] {
 }
 ```
 
-### 4.5 缓存策略
+### 4.5 工时 API 接口
+
+**实现位置**：`src/api/endpoints/workloads.ts`、`src/tools/listWorkloads.ts`
+
+**使用接口**：`GET /v1/workloads`（非 `/v1/project/workloads`）
+
+#### PRD 参数设计（Tool 层）
+
+MCP Tool `list_workloads` 暴露的参数遵循 PRD 定义：
+
+| principal_type | principal_id | 含义 | 内部转换 |
+|----------------|--------------|------|----------|
+| `user` | 用户 ID | 按用户查询 | → `report_by_id` |
+| `project` | 项目 ID | 按项目查询 | → `pilot_id` |
+| `work_item` | 工作项 ID | 按工作项查询 | → API 原生参数 |
+
+#### API 底层参数
+
+PingCode `/v1/workloads` API 支持的过滤参数：
+
+| 参数 | 说明 | 示例 |
+|------|------|------|
+| `start_at` / `end_at` | 时间范围（必填） | Unix 时间戳 |
+| `report_by_id` | 按填报人过滤 | 用户 ID |
+| `pilot_id` | 按项目过滤（需配合 principal_type） | 项目 ID |
+| `principal_type` + `principal_id` | 按主体过滤 | `work_item` + 工作项 ID |
+
+**API 原生 principal_type 枚举值**：
+- `work_item` - 工作项
+- `idea` - 想法（需要 Ideas 模块权限）
+- `test_case` - 用例（需要 Testhub 模块权限）
+
+**注意事项**：
+- PRD 定义的 `principal_type=user/project` 由 Tool 层转换为 API 参数
+- 工时响应中不直接包含项目信息，需通过关联的工作项获取
+
+### 4.6 缓存策略
 
 **实现位置**：`src/cache/memory.ts`
 
@@ -385,7 +420,7 @@ npm run test        # 完整输出
 npm run test:quiet  # 简洁输出
 ```
 
-**测试覆盖（24 个测试）**：
+**测试覆盖（30 个测试）**：
 
 | AC | 测试数 | 说明 |
 |----|--------|------|
@@ -395,6 +430,7 @@ npm run test:quiet  # 简洁输出
 | AC4 | 4 | 可观测性 |
 | AC5 | 2 | NO_DATA 处理 |
 | AC6 | 6 | 交互场景 |
+| AC7 | 6 | list_workloads PRD 参数 |
 
 ---
 

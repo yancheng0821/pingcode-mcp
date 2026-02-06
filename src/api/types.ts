@@ -16,9 +16,45 @@ export interface PingCodeWorkloadWorkItem {
   type?: string;
 }
 
+/**
+ * /v1/workloads API 原始响应格式
+ */
+export interface RawPingCodeWorkload {
+  id: string;
+  principal_type: 'work_item' | 'idea' | 'test_case';
+  principal?: {
+    id: string;
+    identifier: string;
+    title: string;
+    type?: string;
+  };
+  type?: {
+    id: string;
+    name: string;
+  };
+  duration: number;
+  review_state?: string;
+  description?: string;
+  report_at: number;
+  report_by: {
+    id: string;
+    name: string;
+    display_name: string;
+  };
+  created_at: number;
+  created_by?: {
+    id: string;
+    name: string;
+    display_name: string;
+  };
+}
+
+/**
+ * 标准化后的工时记录
+ */
 export interface PingCodeWorkload {
   id: string;
-  project: PingCodeProject;
+  project?: PingCodeProject;
   work_item?: PingCodeWorkloadWorkItem;
   duration: number;       // hours
   description?: string;

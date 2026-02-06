@@ -14,16 +14,24 @@ const DEFAULT_LIMIT = 100;
 // ============ Schema 定义 ============
 
 export const ListWorkloadsInputSchema = z.object({
-  // 用户过滤
-  user: z.object({
-    id: z.string().optional(),
-    name: z.string().optional(),
-  }).optional(),
+  // PRD 参数：principal_type + principal_id（统一查询入口）
+  // - user: 按用户查询（转换为 report_by_id）
+  // - project: 按项目查询（转换为 pilot_id）
+  // - work_item: 按工作项查询（使用 API 原生 principal_type + principal_id）
+  principal_type: z.enum(['user', 'project', 'work_item']).optional(),
+  principal_id: z.string().optional(),
+  // 兼容参数：直接使用 report_by_id（按填报人查询）
+  report_by_id: z.string().optional(),
   // 时间范围
   time_range: z.object({
     start: z.string(),
     end: z.string(),
   }),
+  // 兼容参数：用户对象（支持模糊匹配）
+  user: z.object({
+    id: z.string().optional(),
+    name: z.string().optional(),
+  }).optional(),
   // 本地过滤参数
   filter_project_id: z.string().optional(),
   filter_work_item_id: z.string().optional(),
@@ -48,13 +56,13 @@ export interface WorkloadRecord {
     id: string;
     identifier: string;
     title: string;
-    project: { id: string; name: string };
+    project: { id: string; name: string } | null;
   } | null;
   project: {
     id: string;
     identifier: string;
     name: string;
-  };
+  } | null;
   description?: string;
   // 原始字段
   user_id: string;
@@ -90,9 +98,40 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
   logger.info({ input }, 'list_workloads called');
 
   try {
-    // 1. 解析用户参数（如果提供）
-    let filterUserId: string | undefined;
-    if (input.user) {
+    // 验证 principal_type 和 principal_id 必须同时提供
+    if ((input.principal_type && !input.principal_id) || (!input.principal_type && input.principal_id)) {
+      return {
+        error: 'principal_type and principal_id must be provided together',
+        code: 'INVALID_PARAMS',
+      };
+    }
+
+    // 1. 处理 PRD 中的 principal_type 语义转换
+    let filterUserId: string | undefined = input.report_by_id;
+    let filterProjectId: string | undefined = input.filter_project_id;
+    let apiPrincipalType: 'work_item' | undefined;
+    let apiPrincipalId: string | undefined;
+
+    if (input.principal_type && input.principal_id) {
+      switch (input.principal_type) {
+        case 'user':
+          // principal_type=user → 转换为 report_by_id 过滤
+          filterUserId = input.principal_id;
+          break;
+        case 'project':
+          // principal_type=project → 转换为 pilot_id 过滤
+          filterProjectId = input.principal_id;
+          break;
+        case 'work_item':
+          // principal_type=work_item → 使用 API 原生参数
+          apiPrincipalType = 'work_item';
+          apiPrincipalId = input.principal_id;
+          break;
+      }
+    }
+
+    // 2. 解析用户参数（兼容旧的 user 对象方式）
+    if (!filterUserId && input.user) {
       if (input.user.id) {
         filterUserId = input.user.id;
         const user = await userService.getUser(filterUserId);
@@ -125,7 +164,7 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
       }
     }
 
-    // 2. 解析时间范围
+    // 3. 解析时间范围
     let timeRange;
     try {
       timeRange = parseTimeRange(input.time_range.start, input.time_range.end);
@@ -136,18 +175,20 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
       };
     }
 
-    // 3. 获取工时数据
+    // 4. 获取工时数据
     const result = await apiListWorkloads({
       startAt: timeRange.start,
       endAt: timeRange.end,
       userId: filterUserId,
-      projectId: input.filter_project_id,
+      projectId: filterProjectId,
+      principalType: apiPrincipalType,
+      principalId: apiPrincipalId,
     });
 
-    // 4. 获取工作项详情（可选增强）
+    // 5. 获取工作项详情（可选增强）
     const { workItems } = await workItemService.enrichWorkloadsWithWorkItems(result.workloads);
 
-    // 5. 过滤
+    // 6. 过滤
     let workloads = result.workloads;
 
     // 按工作项过滤（本地）
@@ -155,7 +196,7 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
       workloads = workloads.filter(w => w.work_item?.id === input.filter_work_item_id);
     }
 
-    // 6. 检查是否有数据
+    // 7. 检查是否有数据
     if (workloads.length === 0) {
       const startDate = new Date(timeRange.start * 1000).toISOString().split('T')[0];
       const endDate = new Date(timeRange.end * 1000).toISOString().split('T')[0];
@@ -165,30 +206,38 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
       };
     }
 
-    // 7. 应用硬上限
+    // 8. 应用硬上限
     const total = workloads.length;
     const effectiveLimit = Math.min(input.limit ?? DEFAULT_LIMIT, MAX_LIMIT);
     const resultTruncated = workloads.length > effectiveLimit;
     workloads = workloads.slice(0, effectiveLimit);
 
-    // 8. 格式化输出
+    // 9. 格式化输出
     const formattedWorkloads: WorkloadRecord[] = workloads.map(w => {
       // 获取工作项详情（优先使用缓存的详细信息）
       let workItem = null;
+      let projectInfo: { id: string; identifier?: string; name: string } | null = null;
+
       if (w.work_item) {
         const cachedWorkItem = workItems.get(w.work_item.id);
-        workItem = {
-          id: w.work_item.id,
-          identifier: w.work_item.identifier,
-          title: w.work_item.title,
-          project: {
-            id: w.project.id,
-            name: w.project.name,
-          },
-        };
-        // 如果有缓存的详细信息，使用缓存的标题（可能更完整）
         if (cachedWorkItem) {
-          workItem.title = cachedWorkItem.title;
+          projectInfo = cachedWorkItem.project;
+          workItem = {
+            id: w.work_item.id,
+            identifier: w.work_item.identifier,
+            title: cachedWorkItem.title,
+            project: {
+              id: cachedWorkItem.project.id,
+              name: cachedWorkItem.project.name,
+            },
+          };
+        } else {
+          workItem = {
+            id: w.work_item.id,
+            identifier: w.work_item.identifier,
+            title: w.work_item.title,
+            project: null,
+          };
         }
       }
 
@@ -203,15 +252,15 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
           display_name: w.report_by.display_name,
         },
         work_item: workItem,
-        project: {
-          id: w.project.id,
-          identifier: w.project.identifier,
-          name: w.project.name,
-        },
+        project: projectInfo ? {
+          id: projectInfo.id,
+          identifier: projectInfo.identifier || '',
+          name: projectInfo.name,
+        } : null,
         description: w.description,
         // 原始字段
         user_id: w.report_by.id,
-        project_id: w.project.id,
+        project_id: projectInfo?.id || '',
         work_item_id: w.work_item?.id,
         date_at: w.report_at,
         type: w.type,
@@ -244,13 +293,12 @@ export const listWorkloadsToolDefinition = {
   name: 'list_workloads',
   description: `获取工时记录列表。
 
-支持按用户、项目、工作项过滤。
-
-参数说明：
-- user: 按用户过滤（可选）
-- time_range: 时间范围（必填）
-- filter_project_id: 按项目 ID 过滤（可选）
-- filter_work_item_id: 按工作项 ID 过滤（可选）
+支持多种过滤方式（按 PRD 定义）：
+- 按用户查询：principal_type=user + principal_id=用户ID
+- 按项目查询：principal_type=project + principal_id=项目ID
+- 按工作项查询：principal_type=work_item + principal_id=工作项ID
+- 按填报人查询：report_by_id 或 user（兼容方式）
+- 按工作项过滤：filter_work_item_id（本地过滤）
 
 返回：
 - workloads: 工时记录列表（含用户、工作项、项目详情）
@@ -260,9 +308,22 @@ export const listWorkloadsToolDefinition = {
   inputSchema: {
     type: 'object',
     properties: {
+      principal_type: {
+        type: 'string',
+        enum: ['user', 'project', 'work_item'],
+        description: '主体类型：user（按用户）、project（按项目）、work_item（按工作项）',
+      },
+      principal_id: {
+        type: 'string',
+        description: '主体 ID（用户ID/项目ID/工作项ID，与 principal_type 配合使用）',
+      },
+      report_by_id: {
+        type: 'string',
+        description: '填报人 ID（兼容参数，等同于 principal_type=user）',
+      },
       user: {
         type: 'object',
-        description: '按用户过滤（可选）',
+        description: '按用户过滤（兼容参数，支持模糊匹配）',
         properties: {
           id: { type: 'string', description: '用户 ID' },
           name: { type: 'string', description: '用户名或显示名' },
@@ -277,13 +338,9 @@ export const listWorkloadsToolDefinition = {
         },
         required: ['start', 'end'],
       },
-      filter_project_id: {
-        type: 'string',
-        description: '按项目 ID 过滤（可选）',
-      },
       filter_work_item_id: {
         type: 'string',
-        description: '按工作项 ID 过滤（可选）',
+        description: '按工作项 ID 过滤（本地过滤，可与其他过滤条件组合）',
       },
       limit: {
         type: 'number',

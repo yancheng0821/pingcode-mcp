@@ -10,6 +10,8 @@
  * - AC3: 权限与鉴权
  * - AC4: 可观测性指标
  * - AC5: 无数据返回 NO_DATA
+ * - AC6: 交互示例场景
+ * - AC7: list_workloads PRD 参数 (principal_type=user/project/work_item, report_by_id)
  */
 
 import { fileURLToPath } from 'url';
@@ -426,6 +428,178 @@ const ac6Tests = [
   }),
 ];
 
+// ============ AC7: list_workloads PRD 参数测试 ============
+const ac7Tests = [
+  test('AC7.1 - 验证使用 /v1/workloads 接口', async () => {
+    // 检查代码中使用的是 /v1/workloads 而非 /v1/project/workloads
+    const workloadsCode = fs.readFileSync(join(projectRoot, 'src/api/endpoints/workloads.ts'), 'utf-8');
+    assert(
+      workloadsCode.includes("'/v1/workloads'"),
+      '应使用 /v1/workloads 接口'
+    );
+    assert(
+      !workloadsCode.includes("'/v1/project/workloads'"),
+      '不应使用 /v1/project/workloads 接口'
+    );
+  }),
+
+  test('AC7.2 - principal_type=user 查询用户工时', async () => {
+    // 场景: 使用 PRD 定义的 principal_type=user 查询指定用户的工时
+    const { listWorkloads } = await import('../dist/tools/listWorkloads.js');
+
+    // 先获取一个有效的用户 ID（从 API 端点获取）
+    const { listUsers } = await import('../dist/api/endpoints/users.js');
+    const users = await listUsers();
+    assert(users.length > 0, '应有至少一个用户');
+    const testUserId = users[0].id;
+
+    const result = await listWorkloads({
+      principal_type: 'user',
+      principal_id: testUserId,
+      time_range: { start: '2026-01-01', end: '2026-01-31' },
+    });
+
+    // 可能返回 NO_DATA 或成功
+    if (result.error && result.code !== 'NO_DATA') {
+      assert(false, `返回错误: ${result.error}`);
+    }
+
+    // 如果有数据，验证只返回该用户的工时
+    if (!result.error && result.workloads) {
+      for (const workload of result.workloads) {
+        assert(
+          workload.user.id === testUserId,
+          `工时应属于指定用户，实际用户: ${workload.user.id}`
+        );
+      }
+    }
+  }),
+
+  test('AC7.3 - principal_type=project 查询项目工时', async () => {
+    // 场景: 使用 PRD 定义的 principal_type=project 查询指定项目的工时
+    const { listWorkloads } = await import('../dist/tools/listWorkloads.js');
+    const projectId = '69846c3745079d734dc6facb'; // 光大银行项目
+
+    const result = await listWorkloads({
+      principal_type: 'project',
+      principal_id: projectId,
+      time_range: { start: '2026-01-01', end: '2026-01-31' },
+    });
+
+    // 可能返回 NO_DATA 或成功
+    if (result.error && result.code !== 'NO_DATA') {
+      assert(false, `返回错误: ${result.error}`);
+    }
+
+    // 如果有数据，验证返回的工时属于该项目
+    if (!result.error && result.workloads) {
+      for (const workload of result.workloads) {
+        // 项目信息可能来自工作项关联
+        if (workload.project) {
+          assert(
+            workload.project.id === projectId,
+            `工时应属于指定项目，实际项目: ${workload.project.id}`
+          );
+        }
+      }
+    }
+  }),
+
+  test('AC7.4 - principal_type=work_item 查询工作项工时', async () => {
+    // 场景: 使用 PRD 定义的 principal_type=work_item 查询指定工作项的工时
+    const { listWorkloads } = await import('../dist/tools/listWorkloads.js');
+
+    // 先获取一个有工时的工作项 ID
+    const { teamWorkSummary } = await import('../dist/tools/teamWorkSummary.js');
+    const teamResult = await teamWorkSummary({
+      time_range: { start: '2026-01-01', end: '2026-01-31' },
+      group_by: 'user',
+      top_n: 1
+    });
+
+    if (teamResult.error) {
+      console.log('     跳过：无法获取工作项数据');
+      return;
+    }
+
+    // 找到一个有工作项的明细
+    const detailWithWorkItem = teamResult.details?.find(d => d.work_item?.id);
+    if (!detailWithWorkItem) {
+      console.log('     跳过：没有找到带工作项的工时记录');
+      return;
+    }
+
+    const workItemId = detailWithWorkItem.work_item.id;
+
+    const result = await listWorkloads({
+      principal_type: 'work_item',
+      principal_id: workItemId,
+      time_range: { start: '2026-01-01', end: '2026-01-31' },
+    });
+
+    if (result.error && result.code !== 'NO_DATA') {
+      assert(false, `返回错误: ${result.error}`);
+    }
+
+    // 如果有数据，验证返回的工时属于该工作项
+    if (!result.error && result.workloads) {
+      for (const workload of result.workloads) {
+        assert(
+          workload.work_item?.id === workItemId,
+          `工时应属于指定工作项，实际: ${workload.work_item?.id}`
+        );
+      }
+    }
+  }),
+
+  test('AC7.5 - report_by_id 直接查询填报人工时', async () => {
+    // 场景: 使用兼容参数 report_by_id 查询
+    const { listWorkloads } = await import('../dist/tools/listWorkloads.js');
+
+    const { listUsers } = await import('../dist/api/endpoints/users.js');
+    const users = await listUsers();
+    const testUserId = users[0].id;
+
+    const result = await listWorkloads({
+      report_by_id: testUserId,
+      time_range: { start: '2026-01-01', end: '2026-01-31' },
+    });
+
+    if (result.error && result.code !== 'NO_DATA') {
+      assert(false, `返回错误: ${result.error}`);
+    }
+
+    if (!result.error && result.workloads) {
+      for (const workload of result.workloads) {
+        assert(
+          workload.user.id === testUserId,
+          `工时应属于指定填报人`
+        );
+      }
+    }
+  }),
+
+  test('AC7.6 - principal_type 和 principal_id 必须同时提供', async () => {
+    const { listWorkloads } = await import('../dist/tools/listWorkloads.js');
+
+    // 只提供 principal_type
+    const result1 = await listWorkloads({
+      principal_type: 'user',
+      time_range: { start: '2026-01-01', end: '2026-01-31' },
+    });
+    assert(result1.error, '只提供 principal_type 应返回错误');
+    assert(result1.code === 'INVALID_PARAMS', `错误码应为 INVALID_PARAMS，实际: ${result1.code}`);
+
+    // 只提供 principal_id
+    const result2 = await listWorkloads({
+      principal_id: 'some-id',
+      time_range: { start: '2026-01-01', end: '2026-01-31' },
+    });
+    assert(result2.error, '只提供 principal_id 应返回错误');
+    assert(result2.code === 'INVALID_PARAMS', `错误码应为 INVALID_PARAMS，实际: ${result2.code}`);
+  }),
+];
+
 // ============ 运行测试 ============
 async function runAllTests() {
   console.log('╔════════════════════════════════════════════════════════════╗');
@@ -439,6 +613,7 @@ async function runAllTests() {
     { name: 'AC4: 可观测性指标', tests: ac4Tests },
     { name: 'AC5: 无数据返回 NO_DATA', tests: ac5Tests },
     { name: 'AC6: 交互示例场景', tests: ac6Tests },
+    { name: 'AC7: list_workloads PRD 参数', tests: ac7Tests },
   ];
 
   for (const group of testGroups) {
