@@ -47,6 +47,11 @@ export interface HoursByMonth {
   hours: number;
 }
 
+export interface HoursByType {
+  type: string;
+  hours: number;
+}
+
 export interface DataQuality {
   workloads_count: number;
   missing_work_item_count: number;
@@ -68,6 +73,7 @@ export interface UserWorkSummary {
   by_day?: HoursByDay[];
   by_week?: HoursByWeek[];
   by_month?: HoursByMonth[];
+  by_type?: HoursByType[];
 }
 
 export interface UserWorkResult {
@@ -89,6 +95,8 @@ export interface TeamMemberSummary {
   // 项目/工作项维度（group_by=project/work_item 时）
   by_project?: HoursByProject[];
   by_work_item?: HoursByWorkItem[];
+  // 类型维度（group_by=type 时）
+  by_type?: HoursByType[];
 }
 
 export interface TeamWorkSummary {
@@ -106,9 +114,11 @@ export interface TeamWorkSummary {
   // 按项目/工作项聚合（当 group_by 为 project/work_item 时）
   by_project?: HoursByProject[];
   by_work_item?: HoursByWorkItem[];
+  // 按类型聚合（当 group_by 为 type 时）
+  by_type?: HoursByType[];
 }
 
-export type TeamGroupBy = 'user' | 'project' | 'work_item' | 'day' | 'week' | 'month';
+export type TeamGroupBy = 'user' | 'project' | 'work_item' | 'day' | 'week' | 'month' | 'type';
 
 export interface DayMatrixRow {
   user: UserInfo;
@@ -142,7 +152,7 @@ export interface TeamWorkResult {
   };
 }
 
-export type GroupBy = 'day' | 'week' | 'month' | 'work_item' | 'project';
+export type GroupBy = 'day' | 'week' | 'month' | 'work_item' | 'project' | 'type';
 
 // ============ 工时服务 ============
 
@@ -191,13 +201,15 @@ export class WorkloadService {
       by_work_item: aggregated.byWorkItem.slice(0, topN),
     };
 
-    // 添加时间维度分组
+    // 添加时间/类型维度分组
     if (groupBy === 'day') {
       summary.by_day = aggregated.byDay;
     } else if (groupBy === 'week') {
       summary.by_week = aggregated.byWeek;
     } else if (groupBy === 'month') {
       summary.by_month = aggregated.byMonth;
+    } else if (groupBy === 'type') {
+      summary.by_type = aggregated.byType;
     }
 
     return {
@@ -299,6 +311,9 @@ export class WorkloadService {
           case 'work_item':
             memberSummary.by_work_item = aggregated.byWorkItem.slice(0, topN);
             break;
+          case 'type':
+            memberSummary.by_type = aggregated.byType;
+            break;
           case 'user':
           default:
             // 默认：同时输出 top_projects 和 top_work_items
@@ -391,6 +406,8 @@ export class WorkloadService {
       teamResult.summary.by_project = teamAggregated.byProject.slice(0, topN);
     } else if (groupBy === 'work_item') {
       teamResult.summary.by_work_item = teamAggregated.byWorkItem.slice(0, topN);
+    } else if (groupBy === 'type') {
+      teamResult.summary.by_type = teamAggregated.byType;
     }
 
     // 11. 构建人天矩阵（如果需要）
@@ -418,6 +435,7 @@ export class WorkloadService {
     byDay: HoursByDay[];
     byWeek: HoursByWeek[];
     byMonth: HoursByMonth[];
+    byType: HoursByType[];
   } {
     let totalHours = 0;
     const projectHours = new Map<string, { project: ProjectInfo; hours: number }>();
@@ -425,6 +443,7 @@ export class WorkloadService {
     const dayHours = new Map<string, number>();
     const weekHours = new Map<string, number>();
     const monthHours = new Map<string, number>();
+    const typeHours = new Map<string, number>();
 
     for (const workload of workloads) {
       const hours = workload.duration || 0;
@@ -441,6 +460,10 @@ export class WorkloadService {
       // 按月
       const month = date.substring(0, 7);  // "2026-01"
       monthHours.set(month, (monthHours.get(month) || 0) + hours);
+
+      // 按工时类型
+      const workloadType = workload.type || 'unknown';
+      typeHours.set(workloadType, (typeHours.get(workloadType) || 0) + hours);
 
       // 按项目（直接从 workload.project 获取）
       const projectId = workload.project.id;
@@ -494,7 +517,11 @@ export class WorkloadService {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([month, hours]) => ({ month, hours }));
 
-    return { totalHours, byProject, byWorkItem, byDay, byWeek, byMonth };
+    const byType = Array.from(typeHours.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([type, hours]) => ({ type, hours }));
+
+    return { totalHours, byProject, byWorkItem, byDay, byWeek, byMonth, byType };
   }
 
   /**

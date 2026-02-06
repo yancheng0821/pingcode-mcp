@@ -12,7 +12,7 @@ export const TeamWorkSummaryInputSchema = z.object({
   }),
   user_ids: z.array(z.string()).optional(),
   project_id: z.string().optional(),
-  group_by: z.enum(['user', 'project', 'work_item', 'day', 'week', 'month']).optional().default('user'),
+  group_by: z.enum(['user', 'project', 'work_item', 'day', 'week', 'month', 'type']).optional().default('user'),
   top_n: z.number().optional().default(5),
   include_matrix: z.boolean().optional().default(false),
 });

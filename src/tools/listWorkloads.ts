@@ -35,6 +35,7 @@ export type ListWorkloadsInput = z.infer<typeof ListWorkloadsInputSchema>;
 // ============ 输出类型 ============
 
 export interface WorkloadRecord {
+  // 标准化字段
   id: string;
   date: string;
   hours: number;
@@ -56,6 +57,10 @@ export interface WorkloadRecord {
   };
   description?: string;
   // 原始字段
+  user_id: string;
+  project_id: string;
+  work_item_id?: string;
+  date_at: number;
   type?: string;
   created_at: number;
 }
@@ -188,6 +193,7 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
       }
 
       return {
+        // 标准化字段
         id: w.id,
         date: formatTimestamp(w.report_at),
         hours: w.duration,
@@ -204,6 +210,10 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
         },
         description: w.description,
         // 原始字段
+        user_id: w.report_by.id,
+        project_id: w.project.id,
+        work_item_id: w.work_item?.id,
+        date_at: w.report_at,
         type: w.type,
         created_at: w.created_at,
       };

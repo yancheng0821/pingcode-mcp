@@ -17,7 +17,7 @@ export const UserWorkSummaryInputSchema = z.object({
     start: z.string(),
     end: z.string(),
   }),
-  group_by: z.enum(['day', 'week', 'month', 'work_item', 'project']).optional().default('work_item'),
+  group_by: z.enum(['day', 'week', 'month', 'work_item', 'project', 'type']).optional().default('work_item'),
   top_n: z.number().optional().default(10),
 });
 

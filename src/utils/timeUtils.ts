@@ -80,6 +80,18 @@ export function parseTimeInput(input: string): Date {
     return start;
   }
 
+  // Check if it's a 10-digit Unix timestamp (seconds)
+  if (/^\d{10}$/.test(trimmedInput)) {
+    const timestamp = parseInt(trimmedInput, 10);
+    return toZonedTime(new Date(timestamp * 1000), config.timezone);
+  }
+
+  // Check if it's a 13-digit Unix timestamp (milliseconds)
+  if (/^\d{13}$/.test(trimmedInput)) {
+    const timestamp = parseInt(trimmedInput, 10);
+    return toZonedTime(new Date(timestamp), config.timezone);
+  }
+
   // Try to parse as date string
   const formats = ['yyyy-MM-dd', 'yyyy/MM/dd', 'yyyyMMdd'];
   for (const format of formats) {
