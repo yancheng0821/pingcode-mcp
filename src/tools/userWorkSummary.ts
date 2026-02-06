@@ -38,11 +38,11 @@ export interface UserWorkSummaryOutput {
     };
     total_hours: number;
     by_project: Array<{
-      project: { id: string; name: string };
+      project: { id: string; identifier: string; name: string; type?: string };
       hours: number;
     }>;
     by_work_item: Array<{
-      work_item: { id: string; identifier: string; title: string; project: { id: string; name: string } };
+      work_item: { id: string; identifier: string; title: string; project: { id: string; identifier: string; name: string; type?: string } };
       hours: number;
     }>;
     by_day?: Array<{ date: string; hours: number }>;
@@ -56,7 +56,7 @@ export interface UserWorkSummaryOutput {
     work_item: {
       identifier: string;
       title: string;
-      project: { id: string; name: string };
+      project: { id: string; identifier: string; name: string; type?: string };
     } | null;
     description?: string;
   }>;
@@ -174,7 +174,12 @@ function formatOutput(result: UserWorkResult): UserWorkSummaryOutput {
       time_range: result.summary.time_range,
       total_hours: result.summary.total_hours,
       by_project: result.summary.by_project.map(p => ({
-        project: { id: p.project.id, name: p.project.name },
+        project: {
+          id: p.project.id,
+          identifier: p.project.identifier,
+          name: p.project.name,
+          type: p.project.type,
+        },
         hours: p.hours,
       })),
       by_work_item: result.summary.by_work_item.map(w => ({
@@ -182,7 +187,12 @@ function formatOutput(result: UserWorkResult): UserWorkSummaryOutput {
           id: w.work_item.id,
           identifier: w.work_item.identifier,
           title: w.work_item.title,
-          project: { id: w.work_item.project.id, name: w.work_item.project.name },
+          project: {
+            id: w.work_item.project.id,
+            identifier: w.work_item.project.identifier,
+            name: w.work_item.project.name,
+            type: w.work_item.project.type,
+          },
         },
         hours: w.hours,
       })),
@@ -197,7 +207,12 @@ function formatOutput(result: UserWorkResult): UserWorkSummaryOutput {
       work_item: d.work_item ? {
         identifier: d.work_item.identifier,
         title: d.work_item.title,
-        project: { id: d.work_item.project.id, name: d.work_item.project.name },
+        project: {
+          id: d.work_item.project.id,
+          identifier: d.work_item.project.identifier,
+          name: d.work_item.project.name,
+          type: d.work_item.project.type,
+        },
       } : null,
       description: d.description,
     })),

@@ -28,6 +28,7 @@ export interface ProjectInfo {
   id: string;
   identifier: string;
   name: string;
+  type?: string;
 }
 
 /**

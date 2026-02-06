@@ -38,11 +38,11 @@ export interface TeamWorkSummaryOutput {
       total_hours: number;
       // 默认输出（group_by=user 时）
       top_projects?: Array<{
-        project: { id: string; name: string };
+        project: { id: string; identifier: string; name: string; type?: string };
         hours: number;
       }>;
       top_work_items?: Array<{
-        work_item: { id: string; identifier: string; title: string };
+        work_item: { id: string; identifier: string; title: string; project: { id: string; identifier: string; name: string; type?: string } };
         hours: number;
       }>;
       // 时间维度聚合
@@ -50,16 +50,16 @@ export interface TeamWorkSummaryOutput {
       by_week?: Array<{ week: string; hours: number }>;
       by_month?: Array<{ month: string; hours: number }>;
       // 项目/工作项维度
-      by_project?: Array<{ project: { id: string; name: string }; hours: number }>;
-      by_work_item?: Array<{ work_item: { id: string; identifier: string; title: string }; hours: number }>;
+      by_project?: Array<{ project: { id: string; identifier: string; name: string; type?: string }; hours: number }>;
+      by_work_item?: Array<{ work_item: { id: string; identifier: string; title: string; project: { id: string; identifier: string; name: string; type?: string } }; hours: number }>;
     }>;
     // 按时间维度聚合
     by_day?: Array<{ date: string; hours: number }>;
     by_week?: Array<{ week: string; hours: number }>;
     by_month?: Array<{ month: string; hours: number }>;
     // 按项目/工作项聚合
-    by_project?: Array<{ project: { id: string; name: string }; hours: number }>;
-    by_work_item?: Array<{ work_item: { id: string; identifier: string; title: string }; hours: number }>;
+    by_project?: Array<{ project: { id: string; identifier: string; name: string; type?: string }; hours: number }>;
+    by_work_item?: Array<{ work_item: { id: string; identifier: string; title: string; project: { id: string; identifier: string; name: string; type?: string } }; hours: number }>;
   };
   details: Array<{
     date: string;
@@ -175,7 +175,12 @@ function formatOutput(result: TeamWorkResult): TeamWorkSummaryOutput {
         // 根据成员数据中存在的字段添加对应输出
         if (m.top_projects) {
           member.top_projects = m.top_projects.map(p => ({
-            project: { id: p.project.id, name: p.project.name },
+            project: {
+              id: p.project.id,
+              identifier: p.project.identifier,
+              name: p.project.name,
+              type: p.project.type,
+            },
             hours: p.hours,
           }));
         }
@@ -185,6 +190,12 @@ function formatOutput(result: TeamWorkResult): TeamWorkSummaryOutput {
               id: w.work_item.id,
               identifier: w.work_item.identifier,
               title: w.work_item.title,
+              project: {
+                id: w.work_item.project.id,
+                identifier: w.work_item.project.identifier,
+                name: w.work_item.project.name,
+                type: w.work_item.project.type,
+              },
             },
             hours: w.hours,
           }));
@@ -200,7 +211,12 @@ function formatOutput(result: TeamWorkResult): TeamWorkSummaryOutput {
         }
         if (m.by_project) {
           member.by_project = m.by_project.map(p => ({
-            project: { id: p.project.id, name: p.project.name },
+            project: {
+              id: p.project.id,
+              identifier: p.project.identifier,
+              name: p.project.name,
+              type: p.project.type,
+            },
             hours: p.hours,
           }));
         }
@@ -210,6 +226,12 @@ function formatOutput(result: TeamWorkResult): TeamWorkSummaryOutput {
               id: w.work_item.id,
               identifier: w.work_item.identifier,
               title: w.work_item.title,
+              project: {
+                id: w.work_item.project.id,
+                identifier: w.work_item.project.identifier,
+                name: w.work_item.project.name,
+                type: w.work_item.project.type,
+              },
             },
             hours: w.hours,
           }));
@@ -256,7 +278,12 @@ function formatOutput(result: TeamWorkResult): TeamWorkSummaryOutput {
   // 添加项目/工作项聚合
   if (result.summary.by_project) {
     output.summary.by_project = result.summary.by_project.map(p => ({
-      project: { id: p.project.id, name: p.project.name },
+      project: {
+        id: p.project.id,
+        identifier: p.project.identifier,
+        name: p.project.name,
+        type: p.project.type,
+      },
       hours: p.hours,
     }));
   }
@@ -266,6 +293,12 @@ function formatOutput(result: TeamWorkResult): TeamWorkSummaryOutput {
         id: w.work_item.id,
         identifier: w.work_item.identifier,
         title: w.work_item.title,
+        project: {
+          id: w.work_item.project.id,
+          identifier: w.work_item.project.identifier,
+          name: w.work_item.project.name,
+          type: w.work_item.project.type,
+        },
       },
       hours: w.hours,
     }));
