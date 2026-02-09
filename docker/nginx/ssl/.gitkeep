@@ -1,0 +1,5 @@
+# 将 SSL 证书放在此目录：
+# - cert.pem (证书)
+# - key.pem (私钥)
+#
+# 然后修改 nginx.conf 启用 HTTPS 配置
