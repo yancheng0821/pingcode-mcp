@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import { userService } from '../services/userService.js';
 import { workloadService, type UserWorkResult, type GroupBy } from '../services/workloadService.js';
-import { parseTimeRange } from '../utils/timeUtils.js';
+import { parseTimeRange, formatTimestamp } from '../utils/timeUtils.js';
 import { logger } from '../utils/logger.js';
 import { createToolDefinition } from './schemaUtils.js';
+import { PingCodeApiError } from '../api/client.js';
 
 // ============ Schema 定义 ============
 
@@ -75,7 +76,7 @@ export interface UserWorkSummaryOutput {
 
 export interface UserWorkSummaryError {
   error: string;
-  code: 'USER_NOT_FOUND' | 'USER_AMBIGUOUS' | 'INVALID_TIME_RANGE' | 'NO_DATA' | 'INTERNAL_ERROR';
+  code: 'USER_NOT_FOUND' | 'USER_AMBIGUOUS' | 'INVALID_TIME_RANGE' | 'NO_DATA' | 'UPSTREAM_API_ERROR' | 'INTERNAL_ERROR';
   candidates?: Array<{
     id: string;
     name: string;
@@ -145,8 +146,16 @@ export async function userWorkSummary(input: UserWorkSummaryInput, signal?: Abor
 
     // 4. 检查是否有数据
     if (result.data_quality.workloads_count === 0) {
-      const startDate = new Date(timeRange.start * 1000).toISOString().split('T')[0];
-      const endDate = new Date(timeRange.end * 1000).toISOString().split('T')[0];
+      // Distinguish "API failed so we got nothing" from "genuinely no data"
+      if (result.data_quality.pagination_truncated
+          && result.data_quality.truncation_reasons?.includes('fetch_error')) {
+        return {
+          error: '无法获取工时数据（上游 API 请求失败），请检查服务配置和 PingCode API 状态后重试。',
+          code: 'UPSTREAM_API_ERROR',
+        };
+      }
+      const startDate = formatTimestamp(timeRange.start);
+      const endDate = formatTimestamp(timeRange.end);
       return {
         error: `用户 "${userResult.user.display_name}" 在 ${startDate} 至 ${endDate} 期间没有工时记录。`,
         code: 'NO_DATA',
@@ -157,6 +166,14 @@ export async function userWorkSummary(input: UserWorkSummaryInput, signal?: Abor
     return formatOutput(result);
   } catch (error) {
     logger.error({ error, input }, 'user_work_summary failed');
+
+    // Upstream API errors (401, 403, etc.) should be clearly reported
+    if (error instanceof PingCodeApiError) {
+      return {
+        error: `PingCode API 请求失败 (HTTP ${error.status}): ${error.message}`,
+        code: 'UPSTREAM_API_ERROR',
+      };
+    }
 
     return {
       error: `Internal error: ${(error as Error).message}`,

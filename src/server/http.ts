@@ -81,7 +81,11 @@ const apiKeyMap = parseApiKeys();
 /**
  * 验证 API Key
  * 支持 Authorization: Bearer <key> 或 X-API-Key: <key>
- * Returns { valid, keyId } for audit logging
+ * Returns { valid, keyId } for audit logging.
+ *
+ * When TOKEN_MODE=user, keyId doubles as the bound userId — the API key
+ * proves both "you can use this service" AND "you are this user", preventing
+ * identity forgery via untrusted headers.
  */
 export function validateApiKey(req: IncomingMessage): { valid: boolean; keyId?: string } {
   // 如果未配置任何 API Key，跳过验证
@@ -129,6 +133,32 @@ function getClientIp(req: IncomingMessage): string {
     }
   }
   return req.socket.remoteAddress || 'unknown';
+}
+
+/**
+ * Resolve the bound user ID from an API key's keyId.
+ *
+ * In TOKEN_MODE=user, the API key proves identity:
+ * - MCP_API_KEYS="key1:user-alice,key2:user-bob" → keyId IS the userId
+ * - Single MCP_API_KEY (keyId="default") → fall back to PINGCODE_USER_ID
+ *
+ * Returns undefined if no user can be resolved (caller should reject).
+ */
+export function resolveBoundUserId(keyId: string | undefined): string | undefined {
+  if (!keyId) return undefined;
+
+  // Single-key mode: keyId is "default", use PINGCODE_USER_ID
+  if (keyId === 'default') {
+    return config.pingcode.userId || undefined;
+  }
+
+  // Auto-generated key IDs (e.g., "key-0") without explicit user binding
+  if (keyId.startsWith('key-')) {
+    return config.pingcode.userId || undefined;
+  }
+
+  // Multi-key mode: keyId IS the userId
+  return keyId;
 }
 
 /**
@@ -193,14 +223,7 @@ export async function startHttpServer(serverFactory: (ctx?: UserContext) => Serv
       return;
     }
 
-    // 指标端点（不需要鉴权，供 Prometheus 等监控系统抓取）
-    if (path === '/metrics' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(metrics.getSnapshot(), null, 2));
-      return;
-    }
-
-    // API Key 验证（以下端点需要鉴权）
+    // API Key 验证（以下端点均需鉴权，包括 /metrics）
     const authResult = validateApiKey(req);
     if (!authResult.valid) {
       const clientIp = getClientIp(req);
@@ -211,6 +234,13 @@ export async function startHttpServer(serverFactory: (ctx?: UserContext) => Serv
     }
     if (authResult.keyId) {
       logger.debug({ keyId: authResult.keyId, path }, 'Authenticated request');
+    }
+
+    // 指标端点（需要鉴权，防止暴露运行态信息）
+    if (path === '/metrics' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(metrics.getSnapshot(), null, 2));
+      return;
     }
 
     // MCP 端点 - DELETE（终止 session）
@@ -237,9 +267,14 @@ export async function startHttpServer(serverFactory: (ctx?: UserContext) => Serv
       let body: unknown;
       try {
         body = await parseRequestBody(req);
-      } catch {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Bad Request', message: 'Invalid JSON' }));
+      } catch (parseError) {
+        if (parseError instanceof PayloadTooLargeError) {
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Payload Too Large', message: parseError.message }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Bad Request', message: 'Invalid JSON' }));
+        }
         return;
       }
 
@@ -268,19 +303,30 @@ export async function startHttpServer(serverFactory: (ctx?: UserContext) => Serv
             sessionIdGenerator: () => randomUUID(),
           });
 
-          // Build UserContext for user-mode sessions
+          // Build UserContext for user-mode sessions.
+          // Identity is derived from the API key binding — NOT from
+          // client-supplied headers — to prevent identity forgery.
+          //
+          // MCP_API_KEYS format in user mode: "key1:userId1,key2:userId2"
+          // Single MCP_API_KEY: uses PINGCODE_USER_ID as the bound user.
           let sessionUserContext: UserContext | undefined;
           if (config.pingcode.tokenMode === 'user') {
-            const xUserId = req.headers['x-user-id'] as string | undefined;
-            if (!xUserId) {
-              res.writeHead(400, { 'Content-Type': 'application/json' });
+            // Warn if client sends X-User-Id (ignored for security)
+            if (req.headers['x-user-id']) {
+              logger.warn('X-User-Id header is ignored in TOKEN_MODE=user; identity is derived from API key binding');
+            }
+
+            const boundUserId = resolveBoundUserId(authResult.keyId);
+            if (!boundUserId) {
+              res.writeHead(403, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({
-                error: 'TOKEN_MODE_USER_CONTEXT_REQUIRED',
-                message: 'X-User-Id header is required when TOKEN_MODE=user',
+                error: 'USER_IDENTITY_NOT_BOUND',
+                message: 'TOKEN_MODE=user requires each API key to be bound to a user ID. '
+                  + 'Use MCP_API_KEYS=key:userId format, or set PINGCODE_USER_ID for single-key mode.',
               }));
               return;
             }
-            sessionUserContext = { userId: xUserId, tokenMode: 'user' };
+            sessionUserContext = { userId: boundUserId, tokenMode: 'user' };
           }
 
           // 为新 session 创建独立的 MCP Server（SDK 要求每个 transport 对应一个 Server 实例）
@@ -353,8 +399,10 @@ export async function startHttpServer(serverFactory: (ctx?: UserContext) => Serv
 }
 
 /**
- * 解析请求体
+ * 解析请求体（带大小限制，防止 OOM）
  */
+const MAX_BODY_SIZE = 1 * 1024 * 1024; // 1 MB
+
 async function parseRequestBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     // GET 请求没有 body
@@ -363,9 +411,24 @@ async function parseRequestBody(req: IncomingMessage): Promise<unknown> {
       return;
     }
 
+    // Fast-path: reject if Content-Length exceeds limit
+    const contentLength = req.headers['content-length'];
+    if (contentLength && parseInt(contentLength, 10) > MAX_BODY_SIZE) {
+      req.resume(); // drain the stream
+      reject(new PayloadTooLargeError());
+      return;
+    }
+
     const chunks: Buffer[] = [];
+    let totalSize = 0;
 
     req.on('data', (chunk: Buffer) => {
+      totalSize += chunk.length;
+      if (totalSize > MAX_BODY_SIZE) {
+        req.destroy();
+        reject(new PayloadTooLargeError());
+        return;
+      }
       chunks.push(chunk);
     });
 
@@ -385,4 +448,11 @@ async function parseRequestBody(req: IncomingMessage): Promise<unknown> {
 
     req.on('error', reject);
   });
+}
+
+class PayloadTooLargeError extends Error {
+  constructor() {
+    super(`Request body exceeds ${MAX_BODY_SIZE} bytes`);
+    this.name = 'PayloadTooLargeError';
+  }
 }

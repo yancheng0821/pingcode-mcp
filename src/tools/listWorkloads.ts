@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { listWorkloads as apiListWorkloads } from '../api/endpoints/workloads.js';
+import { PingCodeApiError } from '../api/client.js';
 import { userService } from '../services/index.js';
 import { workItemService } from '../services/index.js';
 import { parseTimeRange } from '../utils/timeUtils.js';
@@ -88,7 +89,7 @@ export interface ListWorkloadsOutput {
 
 export interface ListWorkloadsError {
     error: string;
-    code: 'INVALID_TIME_RANGE' | 'INVALID_PARAMS' | 'USER_NOT_FOUND' | 'AMBIGUOUS_USER' | 'NO_DATA' | 'INTERNAL_ERROR';
+    code: 'INVALID_TIME_RANGE' | 'INVALID_PARAMS' | 'USER_NOT_FOUND' | 'AMBIGUOUS_USER' | 'NO_DATA' | 'UPSTREAM_API_ERROR' | 'INTERNAL_ERROR';
     candidates?: Array<{ id: string; name: string; display_name: string }>;
 }
 
@@ -201,8 +202,16 @@ export async function listWorkloads(input: ListWorkloadsInput, signal?: AbortSig
 
         // 7. 检查是否有数据
         if (workloads.length === 0) {
-            const startDate = new Date(timeRange.start * 1000).toISOString().split('T')[0];
-            const endDate = new Date(timeRange.end * 1000).toISOString().split('T')[0];
+            // Distinguish "API failed so we got nothing" from "genuinely no data"
+            if (result.paginationTruncated
+                && result.truncationReasons.includes('fetch_error')) {
+                return {
+                    error: '无法获取工时数据（上游 API 请求失败），请检查服务配置和 PingCode API 状态后重试。',
+                    code: 'UPSTREAM_API_ERROR',
+                };
+            }
+            const startDate = formatTimestamp(timeRange.start);
+            const endDate = formatTimestamp(timeRange.end);
             return {
                 error: `在 ${startDate} 至 ${endDate} 期间没有找到工时记录。`,
                 code: 'NO_DATA',
@@ -284,6 +293,14 @@ export async function listWorkloads(input: ListWorkloadsInput, signal?: AbortSig
         };
     } catch (error) {
         logger.error({ error, input }, 'list_workloads failed');
+
+        if (error instanceof PingCodeApiError) {
+            return {
+                error: `PingCode API 请求失败 (HTTP ${error.status}): ${error.message}`,
+                code: 'UPSTREAM_API_ERROR',
+            };
+        }
+
         return {
             error: `Internal error: ${(error as Error).message}`,
             code: 'INTERNAL_ERROR',

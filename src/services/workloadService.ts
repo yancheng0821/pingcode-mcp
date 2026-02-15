@@ -126,6 +126,13 @@ export interface DayMatrixRow {
     hours_per_day: number[];
 }
 
+export interface WeekMatrixRow {
+    user: UserInfo;
+    hours_per_week: number[];
+}
+
+export type MatrixType = 'day' | 'week';
+
 export interface TeamWorkloadDetail {
     date: string;
     workload_id: string;
@@ -142,6 +149,10 @@ export interface TeamWorkResult {
     by_day_matrix?: {
         dates: string[];
         rows: DayMatrixRow[];
+    };
+    by_week_matrix?: {
+        weeks: string[];
+        rows: WeekMatrixRow[];
     };
     data_quality: {
         workloads_count: number;
@@ -243,11 +254,12 @@ export class WorkloadService {
             groupBy?: TeamGroupBy;
             topN?: number;
             includeMatrix?: boolean;
+            matrixType?: MatrixType;
             includeZeroUsers?: boolean;
             signal?: AbortSignal;
         } = {}
     ): Promise<TeamWorkResult> {
-        const { userIds, projectId, groupBy = 'user', topN = 5, includeMatrix = false, includeZeroUsers = true, signal } = options;
+        const { userIds, projectId, groupBy = 'user', topN = 5, includeMatrix = false, matrixType = 'day', includeZeroUsers = true, signal } = options;
 
         // 1. 获取用户列表
         let targetUserIds: string[];
@@ -470,9 +482,13 @@ export class WorkloadService {
             teamResult.summary.by_type = teamAggregated.byType;
         }
 
-        // 11. 构建人天矩阵（如果需要）
+        // 11. 构建矩阵（如果需要）
         if (includeMatrix) {
-            teamResult.by_day_matrix = this.buildDayMatrix(filteredWorkloadsMap, usersMap, startAt, endAt);
+            if (matrixType === 'week') {
+                teamResult.by_week_matrix = this.buildWeekMatrix(filteredWorkloadsMap, usersMap, startAt, endAt);
+            } else {
+                teamResult.by_day_matrix = this.buildDayMatrix(filteredWorkloadsMap, usersMap, startAt, endAt);
+            }
         }
 
         return teamResult;
@@ -635,14 +651,11 @@ export class WorkloadService {
         startAt: number,
         endAt: number
     ): { dates: string[]; rows: DayMatrixRow[] } {
-        // 生成日期列表
+        // 生成日期列表（使用配置时区，与 formatTimestamp 一致）
         const dates: string[] = [];
-        const current = new Date(startAt * 1000);
-        const end = new Date(endAt * 1000);
-
-        while (current < end) {
-            dates.push(current.toISOString().split('T')[0]);
-            current.setDate(current.getDate() + 1);
+        const DAY_SECONDS = 86400;
+        for (let ts = startAt; ts < endAt; ts += DAY_SECONDS) {
+            dates.push(formatTimestamp(ts));
         }
 
         // 构建每个用户的行
@@ -675,6 +688,59 @@ export class WorkloadService {
         });
 
         return { dates, rows };
+    }
+
+    /**
+     * 构建人周矩阵
+     */
+    private buildWeekMatrix(
+        workloadsMap: Map<string, WorkloadsResult>,
+        usersMap: Map<string, UserInfo>,
+        startAt: number,
+        endAt: number
+    ): { weeks: string[]; rows: WeekMatrixRow[] } {
+        // 生成周列表：收集范围内所有 ISO 周 key
+        const weekSet = new Set<string>();
+        const DAY_SECONDS = 86400;
+        for (let ts = startAt; ts < endAt; ts += DAY_SECONDS) {
+            weekSet.add(this.getWeekKey(ts));
+        }
+        const weeks = Array.from(weekSet).sort();
+
+        // 构建 week→index 映射
+        const weekIndex = new Map<string, number>();
+        weeks.forEach((w, i) => weekIndex.set(w, i));
+
+        // 构建每个用户的行
+        const rows: WeekMatrixRow[] = [];
+
+        for (const [userId, result] of workloadsMap) {
+            const user = usersMap.get(userId);
+            if (!user) continue;
+
+            // 按周汇总
+            const weekMap = new Map<string, number>();
+            for (const w of result.workloads) {
+                const week = this.getWeekKey(w.report_at);
+                weekMap.set(week, (weekMap.get(week) || 0) + w.duration);
+            }
+
+            const hoursPerWeek = weeks.map(wk => weekMap.get(wk) || 0);
+
+            // 只包含有工时的用户
+            if (hoursPerWeek.some(h => h > 0)) {
+                rows.push({ user, hours_per_week: hoursPerWeek });
+            }
+        }
+
+        // 按总工时排序
+        rows.sort((a, b) => {
+            const totalA = a.hours_per_week.reduce((sum, h) => sum + h, 0);
+            const totalB = b.hours_per_week.reduce((sum, h) => sum + h, 0);
+            return totalB - totalA;
+        });
+
+        return { weeks, rows };
     }
 
     /**

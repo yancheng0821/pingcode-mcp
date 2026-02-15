@@ -17,6 +17,8 @@ export const ListUsersInputSchema = z.object({
   page_index: z.number().min(1).optional().default(1),
   // 兼容旧参数
   limit: z.number().optional(),
+  // Internal: set by scopeEnforcer in user mode to restrict results to a single user
+  _restrict_to_user_id: z.string().optional(),
 });
 
 export type ListUsersInput = z.infer<typeof ListUsersInputSchema>;
@@ -55,10 +57,15 @@ export async function listUsers(input: ListUsersInput, signal?: AbortSignal): Pr
 
     let filteredUsers = allUsers;
 
+    // User-mode scope restriction: only return the authenticated user's record
+    if (input._restrict_to_user_id) {
+      filteredUsers = allUsers.filter(u => u.id === input._restrict_to_user_id);
+    }
+
     // 按关键词过滤
     if (input.keyword) {
       const keyword = input.keyword.toLowerCase();
-      filteredUsers = allUsers.filter(u =>
+      filteredUsers = filteredUsers.filter(u =>
         u.name.toLowerCase().includes(keyword) ||
         u.display_name.toLowerCase().includes(keyword) ||
         (u.email && u.email.toLowerCase().includes(keyword))

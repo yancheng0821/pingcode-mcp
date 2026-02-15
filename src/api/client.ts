@@ -217,7 +217,7 @@ export class PingCodeApiClient {
               attempt,
               delay
             }, 'Request failed, retrying');
-            await this.sleep(delay);
+            await this.sleep(delay, signal);
             continue;
           }
 
@@ -282,7 +282,7 @@ export class PingCodeApiClient {
               timeout: config.requestTimeout,
               attempt,
             }, 'Request timed out, retrying');
-            await this.sleep(computeDelay(attempt));
+            await this.sleep(computeDelay(attempt), signal);
             continue;
           }
 
@@ -301,7 +301,7 @@ export class PingCodeApiClient {
             attempt,
             delay
           }, 'Request error, retrying');
-          await this.sleep(delay);
+          await this.sleep(delay, signal);
         }
       }
     }
@@ -309,8 +309,24 @@ export class PingCodeApiClient {
     throw lastError || new Error('Request failed after retries');
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  /**
+   * Cancellable sleep. Resolves after `ms` milliseconds, or rejects
+   * immediately with AbortError if the signal fires during the wait.
+   */
+  private sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new DOMException('The operation was aborted', 'AbortError'));
+        return;
+      }
+
+      const timer = setTimeout(resolve, ms);
+
+      signal?.addEventListener('abort', () => {
+        clearTimeout(timer);
+        reject(new DOMException('The operation was aborted', 'AbortError'));
+      }, { once: true });
+    });
   }
 }
 

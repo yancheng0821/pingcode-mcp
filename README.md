@@ -204,10 +204,11 @@ curl -s -X DELETE http://127.0.0.1:3000/mcp \
 
 ```bash
 npm run dev          # 开发模式
-npm run test:unit    # 单元测试（Vitest，离线可跑）
-npm test             # 回归测试（14 个用例）
+npm run test:unit    # 单元测试（130 个用例，Vitest，离线可跑）
+npm run test:e2e     # E2E 测试（48 个用例，Vitest + Mock 服务器）
+npm test             # 回归测试（14 个用例，需要 PINGCODE_TOKEN）
 npm run test:quiet   # 回归测试（过滤结构化日志）
-npm run test:http    # HTTP 安全测试（22 个用例）
+npm run test:http    # HTTP 安全测试（23 个用例）
 npm run typecheck    # 类型检查
 ```
 

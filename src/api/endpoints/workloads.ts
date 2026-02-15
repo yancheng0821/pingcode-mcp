@@ -1,4 +1,4 @@
-import { apiClient } from '../client.js';
+import { apiClient, PingCodeApiError } from '../client.js';
 import { config } from '../../config/index.js';
 import { logger } from '../../utils/logger.js';
 import { metrics } from '../../utils/metrics.js';
@@ -229,14 +229,23 @@ export async function listWorkloads(params: ListWorkloadsParams): Promise<Worklo
           break;
         }
       } catch (error) {
+        // Fatal client errors (401, 403, 404 etc.) should NOT be silently
+        // swallowed — they indicate auth failure or misconfiguration, not
+        // "partial results".  Propagate so callers distinguish API failure
+        // from genuine "no data".
+        if (error instanceof PingCodeApiError && error.status < 500) {
+          throw error;
+        }
+
+        // Recoverable errors (5xx after retries exhausted, network,
+        // timeout): log and return whatever we fetched so far.
         logger.error({
           error,
           chunkStart,
           chunkEnd,
           currentPage,
-        }, 'Failed to fetch workloads chunk');
+        }, 'Failed to fetch workloads chunk (recoverable)');
 
-        // Continue with partial results
         paginationTruncated = true;
         truncationReasons.push('fetch_error');
         break;

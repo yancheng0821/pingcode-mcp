@@ -74,12 +74,18 @@ function buildDataReliabilityWarning(flags: {
   timeSliced: boolean;
   truncationReasons: string[];
 }): string | null {
+  const hasFetchError = flags.truncationReasons.includes('fetch_error');
+
   const issues: string[] = [];
   if (flags.paginationTruncated) {
-    const reasonDetail = flags.truncationReasons.length > 0
-      ? ` (reasons: ${flags.truncationReasons.join(', ')})`
-      : '';
-    issues.push(`pagination was truncated${reasonDetail}`);
+    if (hasFetchError) {
+      issues.push('upstream API request failed during data retrieval — returned data is PARTIAL and may be missing entire users or time ranges');
+    } else {
+      const reasonDetail = flags.truncationReasons.length > 0
+        ? ` (reasons: ${flags.truncationReasons.join(', ')})`
+        : '';
+      issues.push(`pagination was truncated${reasonDetail}`);
+    }
   }
   if (flags.detailsTruncated) {
     issues.push('detail records were truncated to the display limit');
@@ -89,6 +95,13 @@ function buildDataReliabilityWarning(flags: {
   }
 
   if (issues.length === 0) return null;
+
+  // fetch_error always gets an elevated warning regardless of global truncation rate
+  if (hasFetchError) {
+    return `⚠️ DATA INCOMPLETE: ${issues.join('; ')}. ` +
+      `DO NOT use these results to draw definitive conclusions about totals, rankings, or team-wide metrics. ` +
+      `All aggregations are lower bounds only. Retry the query or narrow the time range / user scope.`;
+  }
 
   // Check global truncation rate for elevated warning
   const truncationRate = metrics.getTruncationRate();
@@ -235,7 +248,13 @@ export function createMcpServer(userContext?: UserContext): Server {
       };
 
       // 业务错误（NO_DATA / USER_NOT_FOUND 等）标记 isError，让 LLM 可自我纠错
-      if (isBusinessError(result)) {
+      // 上游部分失败（fetch_error）同样标记 isError，防止 LLM 对残缺数据做全量结论
+      const hasFetchError = qualityFlags.truncationReasons.includes('fetch_error');
+
+      if (isBusinessError(result) || hasFetchError) {
+        if (hasFetchError) {
+          metrics.recordError(`tool:${name}`, Date.now() - startTime);
+        }
         return {
           content: [
             framingBlock,

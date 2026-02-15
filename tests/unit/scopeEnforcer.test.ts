@@ -52,18 +52,19 @@ describe('enforceUserScope', () => {
       expect(rewritten.report_by_id).toBe('user-123');
     });
 
-    it('list_users: no restriction (read-only)', () => {
+    it('list_users: restricted to own user record', () => {
       const args = {};
       const result = enforceUserScope('list_users', args, userCtx);
       expect(result.allowed).toBe(true);
-      expect(result.args).toEqual(args);
+      const rewritten = result.args as Record<string, unknown>;
+      expect(rewritten._restrict_to_user_id).toBe('user-123');
     });
 
-    it('get_work_item: no restriction (read-only)', () => {
+    it('get_work_item: denied in user mode', () => {
       const args = { id: 'wi-001' };
       const result = enforceUserScope('get_work_item', args, userCtx);
-      expect(result.allowed).toBe(true);
-      expect(result.args).toEqual(args);
+      expect(result.allowed).toBe(false);
+      expect(result.error).toContain('not available in user token mode');
     });
 
     it('unknown tool: denied by default', () => {

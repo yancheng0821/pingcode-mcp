@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import { workloadService, type TeamWorkResult, type TeamGroupBy } from '../services/workloadService.js';
-import { parseTimeRange } from '../utils/timeUtils.js';
+import { parseTimeRange, formatTimestamp } from '../utils/timeUtils.js';
 import { logger } from '../utils/logger.js';
 import { createToolDefinition } from './schemaUtils.js';
+import { PingCodeApiError } from '../api/client.js';
 
 // ============ Schema 定义 ============
 
@@ -16,6 +17,7 @@ export const TeamWorkSummaryInputSchema = z.object({
   group_by: z.enum(['user', 'project', 'work_item', 'day', 'week', 'month', 'type']).optional().default('user'),
   top_n: z.number().optional().default(5),
   include_matrix: z.boolean().optional().default(false),
+  matrix_type: z.enum(['day', 'week']).optional().default('day'),
   include_zero_users: z.boolean().optional().default(true),
 });
 
@@ -83,6 +85,13 @@ export interface TeamWorkSummaryOutput {
       hours_per_day: number[];
     }>;
   };
+  by_week_matrix?: {
+    weeks: string[];
+    rows: Array<{
+      user: { id: string; name: string; display_name: string };
+      hours_per_week: number[];
+    }>;
+  };
   data_quality: {
     workloads_count: number;
     missing_work_item_count: number;
@@ -96,7 +105,7 @@ export interface TeamWorkSummaryOutput {
 
 export interface TeamWorkSummaryError {
   error: string;
-  code: 'INVALID_TIME_RANGE' | 'NO_USERS' | 'NO_DATA' | 'INTERNAL_ERROR';
+  code: 'INVALID_TIME_RANGE' | 'NO_USERS' | 'NO_DATA' | 'UPSTREAM_API_ERROR' | 'INTERNAL_ERROR';
 }
 
 export type TeamWorkSummaryResult = TeamWorkSummaryOutput | TeamWorkSummaryError;
@@ -136,25 +145,43 @@ export async function teamWorkSummary(input: TeamWorkSummaryInput, signal?: Abor
         groupBy: input.group_by as TeamGroupBy,
         topN: input.top_n,
         includeMatrix: input.include_matrix,
+        matrixType: input.matrix_type,
         includeZeroUsers: input.include_zero_users,
         signal,
       }
     );
 
     // 4. 检查是否有数据（include_zero_users 时仍返回全员列表）
-    if (result.data_quality.workloads_count === 0 && !input.include_zero_users) {
-      const startDate = new Date(timeRange.start * 1000).toISOString().split('T')[0];
-      const endDate = new Date(timeRange.end * 1000).toISOString().split('T')[0];
-      return {
-        error: `在 ${startDate} 至 ${endDate} 期间没有找到任何工时记录。请确认时间范围是否正确，或者该时间段内是否有人填报过工时。`,
-        code: 'NO_DATA',
-      };
+    if (result.data_quality.workloads_count === 0) {
+      // Distinguish "API failed so we got nothing" from "genuinely no data"
+      if (result.data_quality.pagination_truncated
+          && result.data_quality.truncation_reasons?.includes('fetch_error')) {
+        return {
+          error: '无法获取工时数据（上游 API 请求失败），请检查服务配置和 PingCode API 状态后重试。',
+          code: 'UPSTREAM_API_ERROR',
+        };
+      }
+      if (!input.include_zero_users) {
+        const startDate = formatTimestamp(timeRange.start);
+        const endDate = formatTimestamp(timeRange.end);
+        return {
+          error: `在 ${startDate} 至 ${endDate} 期间没有找到任何工时记录。请确认时间范围是否正确，或者该时间段内是否有人填报过工时。`,
+          code: 'NO_DATA',
+        };
+      }
     }
 
     // 5. 格式化输出
     return formatOutput(result);
   } catch (error) {
     logger.error({ error, input }, 'team_work_summary failed');
+
+    if (error instanceof PingCodeApiError) {
+      return {
+        error: `PingCode API 请求失败 (HTTP ${error.status}): ${error.message}`,
+        code: 'UPSTREAM_API_ERROR',
+      };
+    }
 
     return {
       error: `Internal error: ${(error as Error).message}`,
@@ -331,6 +358,20 @@ function formatOutput(result: TeamWorkResult): TeamWorkSummaryOutput {
           display_name: r.user.display_name,
         },
         hours_per_day: r.hours_per_day,
+      })),
+    };
+  }
+
+  if (result.by_week_matrix) {
+    output.by_week_matrix = {
+      weeks: result.by_week_matrix.weeks,
+      rows: result.by_week_matrix.rows.map(r => ({
+        user: {
+          id: r.user.id,
+          name: r.user.name,
+          display_name: r.user.display_name,
+        },
+        hours_per_week: r.hours_per_week,
       })),
     };
   }

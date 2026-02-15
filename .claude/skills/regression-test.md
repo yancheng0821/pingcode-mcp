@@ -12,8 +12,9 @@ description: 运行 PingCode MCP 全量测试，验证所有 AC 和安全/可靠
 | 套件 | 命令 | 数量 | 说明 |
 |------|------|------|------|
 | 回归测试 | `node tests/regression.mjs` | 14 | AC1–AC12，需要真实 PingCode API |
-| 单元 + E2E | `npm run test:unit` | 130 | vitest，全 mock，无网络依赖 |
-| HTTP 安全 | `npm run test:http` | 22 | 鉴权/CORS/Session/超时 |
+| 单元测试 | `npm run test:unit` | 130 | vitest，全 mock，无网络依赖（15 个文件） |
+| E2E 测试 | `npm run test:e2e` | 48 | vitest + Mock 服务器（7 个文件） |
+| HTTP 安全 | `npm run test:http` | 23 | 鉴权/CORS/Session/超时/Body 限制 |
 
 ## 回归测试覆盖 (14 个测试，AC1–AC12 核心路径)
 
@@ -36,27 +37,38 @@ description: 运行 PingCode MCP 全量测试，验证所有 AC 和安全/可靠
 - **cors** - Origin 校验、CORS 头
 - **rateLimiter** - 令牌桶限流
 - **timeUtils** - 日期解析、中文别名、时间分片
-- **outputContract** - MCP 输出契约
+- **sanitize** - 控制字符过滤、截断
 - **structuredContent** - structuredContent 字段
 - **schemaConsistency** - Zod schema 与 MCP inputSchema 一致性
-- **isBusinessError** - 业务错误检测
+- **scopeEnforcer** - user mode 作用域限制
 - **workItemBatchCache** - 工作项批量缓存
 - **zeroHourUsers** - 0 工时用户包含/排除
-- **e2e-stdio** - stdio 传输端到端
-- **mockE2E** - InMemoryTransport 全链路 E2E（list_users、user_work_summary、team_work_summary、get_work_item、list_workloads、builtin tools）
+- **multiApiKey** - 多 Key 轮换鉴权
+- **retryJitter** - 指数退避 + jitter
+- **tieredFetch** - 分层批量拉取策略
 
-## HTTP 安全测试覆盖 (22 个测试)
+## E2E 测试覆盖 (48 个测试，7 个文件)
 
-- **SEC1** Origin 验证、**SEC2** CORS 头、**SEC3** API Key 鉴权
-- **SEC4** 公开端点、**SEC5** API 超时与重试、**SEC6** Session 管理
-- **SEC7** 请求解析与部署配置
+- **mcpStdio** - stdio 传输端到端
+- **mockE2E** - InMemoryTransport 全链路（list_users、user_work_summary、team_work_summary、get_work_item、list_workloads、builtin tools）
+- **outputContract** - MCP 输出契约与 schema 合规
+- **promptInjection** - 控制字符与 framing block
+- **upstreamApiFailure** - 上游 API 失败与部分结果
+- **userMode** - TOKEN_MODE=user 作用域限制
+- **nullProjectFallback** - 缺失项目信息降级
+
+## HTTP 安全测试覆盖 (23 个测试)
+
+- **SEC1** Origin 验证（3）、**SEC2** CORS 头（3）、**SEC3** API Key 鉴权（4）
+- **SEC4** 公开端点与鉴权端点（4）、**SEC5** API 超时与重试（2）、**SEC6** Session 管理（3）
+- **SEC7** 请求解析与部署配置（4：非法 JSON、超大 Body 413、绑定地址、CORS 头完整性）
 
 ## 执行步骤
 
 ### 快速验证（无网络依赖）
 
 ```bash
-npm run build && npm run test:unit
+npm run build && npm run test:unit && npm run test:e2e
 ```
 
 ### 完整验证（包含真实 API 回归 + HTTP 安全）
@@ -64,7 +76,8 @@ npm run build && npm run test:unit
 ```bash
 npm run build
 npm run test:unit      # 130 unit tests
-npm run test:http      # 22 HTTP security tests
+npm run test:e2e       # 48 E2E tests
+npm run test:http      # 23 HTTP security tests
 node tests/regression.mjs  # 14 regression tests (需要 PINGCODE_TOKEN)
 ```
 

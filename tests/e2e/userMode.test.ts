@@ -84,15 +84,16 @@ describe('TOKEN_MODE=user via MCP', () => {
     expect(parsed.summary.members[0].user.id).toBe('user-alice');
   });
 
-  it('list_users works without restriction in user mode', async () => {
+  it('list_users is restricted to own user record in user mode', async () => {
     const result = await userClient.callTool({
       name: 'list_users',
       arguments: {},
     });
     expect(result.isError).toBeFalsy();
     const parsed = parseResult(result);
-    // All users should be visible
-    expect(parsed.users.length).toBeGreaterThan(1);
+    // Only the authenticated user's own record should be visible
+    expect(parsed.users).toHaveLength(1);
+    expect(parsed.users[0].id).toBe('user-alice');
   });
 
   it('enterprise mode does not restrict queries', async () => {

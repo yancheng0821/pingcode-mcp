@@ -69,10 +69,27 @@ export function enforceUserScope(
       };
     }
 
-    case 'list_users':
+    case 'list_users': {
+      // User mode: restrict to the authenticated user's own record only,
+      // preventing full enterprise user enumeration.
+      return {
+        allowed: true,
+        args: {
+          ...parsedArgs,
+          _restrict_to_user_id: ctx.userId,
+        },
+      };
+    }
+
     case 'get_work_item': {
-      // Read-only metadata tools — no restriction
-      return { allowed: true, args };
+      // User mode: deny direct tool access to prevent probing arbitrary
+      // work item metadata.  Internal enrichment (workItemService) is
+      // unaffected — it bypasses the tool layer entirely.
+      return {
+        allowed: false,
+        error: 'get_work_item is not available in user token mode. '
+          + 'Work item details are automatically included in user_work_summary results.',
+      };
     }
 
     default: {

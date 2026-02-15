@@ -11,7 +11,7 @@
  * - SEC1: Origin 验证（防 DNS rebinding）
  * - SEC2: CORS 头
  * - SEC3: API Key 鉴权
- * - SEC4: 公开端点（/health, /metrics, 404）
+ * - SEC4: 公开端点（/health, 404）与鉴权端点（/metrics）
  * - SEC5: API 客户端超时与 429 Retry-After
  * - SEC6: Session 管理（上限、TTL、DELETE）
  * - SEC7: 请求解析与部署配置（非法 JSON、绑定地址、CORS 头完整性）
@@ -227,10 +227,17 @@ const sec4Tests = [
     assert(body.service === 'pingcode-mcp', `期望 service=pingcode-mcp，实际: ${body.service}`);
   }),
 
-  test('SEC4.2 - /metrics 无需鉴权返回指标快照', async () => {
-    const res = await fetch(`${BASE}/metrics`);
-    assert(res.status === 200, `期望 200，实际 ${res.status}`);
-    const body = await res.json();
+  test('SEC4.2 - /metrics 需要鉴权（防止暴露运行态信息）', async () => {
+    // 无 Key 访问 /metrics 应返回 401
+    const noAuth = await fetch(`${BASE}/metrics`);
+    assert(noAuth.status === 401, `无 Key 期望 401，实际 ${noAuth.status}`);
+
+    // 有 Key 访问 /metrics 应返回 200
+    const withAuth = await fetch(`${BASE}/metrics`, {
+      headers: { 'Authorization': `Bearer ${TEST_API_KEY}` },
+    });
+    assert(withAuth.status === 200, `有 Key 期望 200，实际 ${withAuth.status}`);
+    const body = await withAuth.json();
     assert('uptime_seconds' in body, '应包含 uptime_seconds 字段');
     assert('requests' in body, '应包含 requests 字段');
   }),
@@ -447,7 +454,24 @@ const sec7Tests = [
     assert(body.message.includes('Invalid JSON'), `message 应含 "Invalid JSON"，实际: ${body.message}`);
   }),
 
-  test('SEC7.2 - 服务默认绑定 127.0.0.1 且日志走 logger', async () => {
+  test('SEC7.2 - 超大请求体返回 413', async () => {
+    // 1.5 MB body — exceeds MAX_BODY_SIZE (1 MB)
+    const largeBody = 'x'.repeat(1.5 * 1024 * 1024);
+    const res = await fetch(`${BASE}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${TEST_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+      },
+      body: largeBody,
+    });
+    assert(res.status === 413, `期望 413，实际 ${res.status}`);
+    const body = await res.json();
+    assert(body.error === 'Payload Too Large', `error 应为 "Payload Too Large"，实际: ${body.error}`);
+  }),
+
+  test('SEC7.3 - 服务默认绑定 127.0.0.1 且日志走 logger', async () => {  // renumbered from 7.2
     const fs = await import('node:fs');
     const path = await import('node:path');
     const { fileURLToPath } = await import('node:url');
@@ -465,7 +489,7 @@ const sec7Tests = [
     );
   }),
 
-  test('SEC7.3 - CORS Allow-Headers 包含鉴权与协议所需头', async () => {
+  test('SEC7.4 - CORS Allow-Headers 包含鉴权与协议所需头', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');
     const { fileURLToPath } = await import('node:url');

@@ -1,7 +1,7 @@
 # PingCode MCP Server 设计方案
 
 > 日期：2026-02-15
-> 状态：已实施（P0/P1/P2 修复完成，73 个测试全部通过）
+> 状态：已实施（P0/P1/P2 修复完成，201 个测试全部通过：130 单元 + 48 E2E + 23 HTTP 安全）
 
 ## 1. 概述
 
@@ -114,8 +114,10 @@ pingcode-mcp/
 │   └── config/               # 配置管理
 │       └── index.ts
 ├── tests/
-│   ├── regression.mjs        # 回归测试（51 个用例）
-│   └── http-security.mjs     # HTTP 安全与部署测试（22 个用例）
+│   ├── unit/                  # 单元测试（130 个用例，15 个文件）
+│   ├── e2e/                   # E2E 测试（48 个用例，7 个文件）
+│   ├── regression.mjs         # 回归测试（14 个用例，需真实 API）
+│   └── http-security.mjs      # HTTP 安全与部署测试（23 个用例）
 ├── docker/
 │   └── Dockerfile            # MCP Server 镜像
 ├── docker-compose.yml
@@ -462,39 +464,39 @@ token: z.string().min(1, 'PINGCODE_TOKEN is required'),
 
 **运行方式**：
 ```bash
-npm run test        # 回归测试（51 个用例，需要 PINGCODE_TOKEN）
-npm run test:http   # HTTP 安全测试（22 个用例，使用 Mock 服务器）
+npm run test:unit   # 单元测试（130 个用例，vitest，离线可跑）
+npm run test:e2e    # E2E 测试（48 个用例，vitest + Mock 服务器）
+npm run test:http   # HTTP 安全测试（23 个用例，使用 Mock 服务器）
+npm test            # 回归测试（14 个用例，需要 PINGCODE_TOKEN）
 npm run typecheck   # TypeScript 类型检查
 ```
 
-**回归测试覆盖（51 个用例）**：
+**回归测试覆盖（14 个用例，`tests/regression.mjs`）**：
 
 | 分组 | 测试数 | 说明 |
 |------|--------|------|
-| AC1 | 8 | 团队时间段查询（含 0 工时用户、项目过滤、missing_count） |
-| AC2 | 3 | 自动分片 |
-| AC3 | 4 | 权限鉴权 |
-| AC4 | 4 | 可观测性 |
-| AC5 | 2 | NO_DATA 处理 |
-| AC6 | 6 | 交互场景 |
-| AC7 | 6 | list_workloads PRD 参数 |
-| AC8 | 4 | MCP 业务错误 isError 语义 |
-| AC9 | 3 | Schema 一致性（Zod vs JSON Schema） |
-| AC10 | 5 | 聚合维度（ISO 周、group_by=type） |
-| AC11 | 3 | 输入参数与配置校验 |
-| AC12 | 3 | 查询性能与缓存 |
+| AC1 | 2 | 团队时间段查询（全员列表、每人含 total_hours） |
+| AC2 | 1 | 自动分片（time_sliced 标记） |
+| AC3 | 2 | 权限鉴权（Bearer token 成功、无效 token 401） |
+| AC4 | 1 | 可观测性（metrics 结构） |
+| AC5 | 1 | NO_DATA 处理（团队查询） |
+| AC6 | 2 | 交互场景（团队月度汇总 Top 5、用户按天汇总） |
+| AC7 | 1 | list_workloads PRD 参数（principal_type=user） |
+| AC8 | 2 | MCP 业务错误 isError 语义 |
+| AC10 | 1 | 聚合维度（ISO 8601 周格式） |
+| AC12 | 1 | 查询性能与缓存（用户列表缓存命中） |
 
-**HTTP 安全测试覆盖（22 个用例，`tests/http-security.mjs`）**：
+**HTTP 安全测试覆盖（23 个用例，`tests/http-security.mjs`）**：
 
 | 分组 | 测试数 | 说明 |
 |------|--------|------|
 | SEC1 | 3 | Origin 验证（防 DNS rebinding） |
 | SEC2 | 3 | CORS 头（反射 Origin、预检、Expose） |
 | SEC3 | 4 | API Key 鉴权（Bearer / X-API-Key） |
-| SEC4 | 4 | 公开端点（/health、/metrics、404） |
+| SEC4 | 4 | 公开端点与鉴权端点（/health、/metrics 需鉴权、404） |
 | SEC5 | 2 | API 超时与 429 Retry-After |
 | SEC6 | 3 | Session 管理（上限 503、TTL 过期、DELETE） |
-| SEC7 | 3 | 请求解析与部署配置 |
+| SEC7 | 4 | 请求解析与部署配置（非法 JSON、超大 Body 413、绑定地址、CORS 头） |
 
 ---
 
