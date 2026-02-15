@@ -7,6 +7,7 @@ const ConfigSchema = z.object({
     baseUrl: z.string().url().default('https://open.pingcode.com'),
     token: z.string().min(1, 'PINGCODE_TOKEN is required'),
     tokenMode: z.enum(['enterprise', 'user']).default('enterprise'),
+    userId: z.string().optional(),
   }),
 
   // Cache (内存缓存)
@@ -21,12 +22,15 @@ const ConfigSchema = z.object({
     httpPort: z.number().default(3000),
     httpMaxSessions: z.number().default(100),
     httpSessionTtlMs: z.number().default(30 * 60 * 1000), // 30 min
+    toolCallTimeoutMs: z.number().default(300000), // 5 min wall-clock limit per tool call
   }),
 
   // Auth (HTTP 模式鉴权)
   auth: z.object({
-    // API Key（空字符串表示不启用鉴权）
+    // API Key（空字符串表示不启用鉴权）— 向后兼容
     apiKey: z.string().default(''),
+    // Multi-key support: "key1:id1,key2:id2" for zero-downtime rotation
+    apiKeys: z.string().default(''),
     // 信任的代理头（nginx 反向代理场景）
     trustProxy: z.boolean().default(false),
     // 允许的 Origin 列表（逗号分隔，防 DNS rebinding）
@@ -47,7 +51,22 @@ const ConfigSchema = z.object({
   pagination: z.object({
     maxPages: z.number().default(200),
     pageSize: z.number().default(100),
+    maxRecords: z.number().default(50000),
+    maxFetchDurationMs: z.number().default(180000), // 3 min soft timeout for data fetching
   }),
+
+  // Bulk Fetch Strategy (tiered)
+  // All tiers use server-side report_by_id filtering (no unfiltered bulk fetch).
+  bulkFetch: z.object({
+    smallThreshold: z.number().default(5),         // ≤N: sequential per-user
+    mediumThreshold: z.number().default(50),        // ≤N: batched concurrent per-user
+    mediumBatchSize: z.number().default(10),         // users per sequential batch (medium tier)
+    mediumConcurrency: z.number().default(3),        // concurrent batches (medium tier)
+    largeBatchSize: z.number().default(20),          // users per sequential batch (large tier)
+    largeConcurrency: z.number().default(5),         // concurrent batches (large tier)
+    circuitBreakerMaxPages: z.number().default(1000),
+    circuitBreakerMaxRecords: z.number().default(200000),
+  }).default({}),
 
   // Timezone
   timezone: z.string().default('Asia/Shanghai'),
@@ -57,6 +76,12 @@ const ConfigSchema = z.object({
 
   // Logging
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+
+  // Data Quality
+  dataQuality: z.object({
+    // When pagination truncation rate exceeds this threshold, emit elevated warnings
+    truncationAlertThreshold: z.number().min(0).max(1).default(0.3),
+  }).default({}),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -67,6 +92,7 @@ function loadConfig(): Config {
       baseUrl: process.env.PINGCODE_BASE_URL,
       token: process.env.PINGCODE_TOKEN,
       tokenMode: process.env.TOKEN_MODE,
+      userId: process.env.PINGCODE_USER_ID,
     },
     cache: {
       ttlUsers: process.env.CACHE_TTL_USERS ? parseInt(process.env.CACHE_TTL_USERS, 10) : undefined,
@@ -77,9 +103,11 @@ function loadConfig(): Config {
       httpPort: process.env.HTTP_PORT ? parseInt(process.env.HTTP_PORT, 10) : undefined,
       httpMaxSessions: process.env.HTTP_MAX_SESSIONS ? parseInt(process.env.HTTP_MAX_SESSIONS, 10) : undefined,
       httpSessionTtlMs: process.env.HTTP_SESSION_TTL_MS ? parseInt(process.env.HTTP_SESSION_TTL_MS, 10) : undefined,
+      toolCallTimeoutMs: process.env.TOOL_CALL_TIMEOUT_MS ? parseInt(process.env.TOOL_CALL_TIMEOUT_MS, 10) : undefined,
     },
     auth: {
       apiKey: process.env.MCP_API_KEY,
+      apiKeys: process.env.MCP_API_KEYS,
       trustProxy: process.env.TRUST_PROXY === 'true',
       allowedOrigins: process.env.ALLOWED_ORIGINS,
       httpHost: process.env.HTTP_HOST,
@@ -91,10 +119,17 @@ function loadConfig(): Config {
     pagination: {
       maxPages: process.env.MAX_PAGES ? parseInt(process.env.MAX_PAGES, 10) : undefined,
       pageSize: process.env.PAGE_SIZE ? parseInt(process.env.PAGE_SIZE, 10) : undefined,
+      maxRecords: process.env.MAX_RECORDS ? parseInt(process.env.MAX_RECORDS, 10) : undefined,
+      maxFetchDurationMs: process.env.MAX_FETCH_DURATION_MS ? parseInt(process.env.MAX_FETCH_DURATION_MS, 10) : undefined,
     },
     timezone: process.env.TIMEZONE,
     nameMatchStrategy: process.env.NAME_MATCH_STRATEGY,
     logLevel: process.env.LOG_LEVEL,
+    dataQuality: {
+      truncationAlertThreshold: process.env.TRUNCATION_ALERT_THRESHOLD
+        ? parseFloat(process.env.TRUNCATION_ALERT_THRESHOLD)
+        : undefined,
+    },
   };
 
   // Remove undefined values for proper default handling

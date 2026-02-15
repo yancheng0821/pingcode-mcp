@@ -72,8 +72,11 @@ describe('MCP Server e2e (InMemoryTransport)', () => {
     });
     expect(result.isError).toBeFalsy();
     const content = result.content as Array<{ type: string; text: string }>;
-    expect(content).toHaveLength(1);
-    const parsed = JSON.parse(content[0].text);
+    // content[0] is framing text, content[1] is JSON for versioned tools
+    expect(content.length).toBeGreaterThanOrEqual(1);
+    const jsonBlock = content.find(b => { try { JSON.parse(b.text); return true; } catch { return false; } });
+    expect(jsonBlock).toBeDefined();
+    const parsed = JSON.parse(jsonBlock!.text);
     expect(parsed.users).toBeDefined();
     expect(parsed.users.length).toBeGreaterThan(0);
     expect(parsed.users[0].id).toBe('user-1');
@@ -100,7 +103,9 @@ describe('MCP Server e2e (InMemoryTransport)', () => {
     });
     expect(result.isError).toBe(true);
     const content = result.content as Array<{ type: string; text: string }>;
-    const parsed = JSON.parse(content[0].text);
+    const jsonBlock = content.find(b => { try { JSON.parse(b.text); return true; } catch { return false; } });
+    expect(jsonBlock).toBeDefined();
+    const parsed = JSON.parse(jsonBlock!.text);
     expect(parsed.error).toBeDefined();
     expect(parsed.code).toBeDefined();
   });

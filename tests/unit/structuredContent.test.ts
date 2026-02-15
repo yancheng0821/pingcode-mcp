@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { createMcpServer } from '../../src/server/mcp.js';
+import { createMcpServer, isBusinessError } from '../../src/server/mcp.js';
 
 // Mock the API client
 vi.mock('../../src/api/client.js', () => {
@@ -59,7 +59,10 @@ describe('MCP structuredContent & annotations', () => {
     });
     expect(result.structuredContent).toBeDefined();
     const content = result.content as Array<{ type: string; text: string }>;
-    const textParsed = JSON.parse(content[0].text);
+    // Find the JSON block (skip framing text)
+    const jsonBlock = content.find(b => { try { JSON.parse(b.text); return true; } catch { return false; } });
+    expect(jsonBlock).toBeDefined();
+    const textParsed = JSON.parse(jsonBlock!.text);
     // structuredContent should match the payload
     expect(result.structuredContent).toEqual(textParsed);
   });
@@ -92,7 +95,52 @@ describe('MCP structuredContent & annotations', () => {
       arguments: {},
     });
     const content = result.content as Array<{ type: string; text: string; annotations?: { audience?: string[] } }>;
-    expect(content[0].annotations).toBeDefined();
-    expect(content[0].annotations!.audience).toContain('assistant');
+    // The JSON data block (content[1] for versioned tools) has annotations
+    const annotatedBlock = content.find(b => b.annotations?.audience);
+    expect(annotatedBlock).toBeDefined();
+    expect(annotatedBlock!.annotations!.audience).toContain('assistant');
+  });
+});
+
+describe('isBusinessError', () => {
+  it('returns true for object with error + code strings', () => {
+    expect(isBusinessError({ error: 'Not found', code: 'USER_NOT_FOUND' })).toBe(true);
+  });
+
+  it('returns true for NO_DATA code', () => {
+    expect(isBusinessError({ error: 'No data', code: 'NO_DATA' })).toBe(true);
+  });
+
+  it('returns true for INTERNAL_ERROR code', () => {
+    expect(isBusinessError({ error: 'Oops', code: 'INTERNAL_ERROR' })).toBe(true);
+  });
+
+  it('returns false for null', () => {
+    expect(isBusinessError(null)).toBe(false);
+  });
+
+  it('returns false for undefined', () => {
+    expect(isBusinessError(undefined)).toBe(false);
+  });
+
+  it('returns false for non-object', () => {
+    expect(isBusinessError('string')).toBe(false);
+    expect(isBusinessError(42)).toBe(false);
+  });
+
+  it('returns false for object missing code', () => {
+    expect(isBusinessError({ error: 'oops' })).toBe(false);
+  });
+
+  it('returns false for object missing error', () => {
+    expect(isBusinessError({ code: 'ERR' })).toBe(false);
+  });
+
+  it('returns false for object with non-string error', () => {
+    expect(isBusinessError({ error: 123, code: 'ERR' })).toBe(false);
+  });
+
+  it('returns false for normal result (no error/code)', () => {
+    expect(isBusinessError({ summary: {}, details: [] })).toBe(false);
   });
 });

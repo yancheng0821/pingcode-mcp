@@ -46,7 +46,7 @@ export function registerAllTools(): void {
   // ============ user_work_summary ============
   toolRegistry.register('user_work_summary', 'v1', {
     status: 'current',
-    handler: userWorkSummary as (input: unknown) => Promise<unknown>,
+    handler: userWorkSummary as (input: unknown, signal?: AbortSignal) => Promise<unknown>,
     inputSchema: UserWorkSummaryInputSchema,
     definition: userWorkSummaryToolDefinition,
   });
@@ -54,7 +54,7 @@ export function registerAllTools(): void {
   // 示例：如果有 v2 版本
   // toolRegistry.register('user_work_summary', 'v2', {
   //   status: 'current',  // v2 成为 current
-  //   handler: userWorkSummaryV2 as (input: unknown) => Promise<unknown>,
+  //   handler: userWorkSummaryV2 as (input: unknown, signal?: AbortSignal) => Promise<unknown>,
   //   inputSchema: UserWorkSummaryV2InputSchema,
   //   definition: userWorkSummaryV2ToolDefinition,
   // });
@@ -64,7 +64,7 @@ export function registerAllTools(): void {
   //   deprecatedAt: '2026-03-01',
   //   removalDate: '2026-06-01',
   //   migrationGuide: 'Use user_work_summary_v2. New fields: xxx',
-  //   handler: userWorkSummary as (input: unknown) => Promise<unknown>,
+  //   handler: userWorkSummary as (input: unknown, signal?: AbortSignal) => Promise<unknown>,
   //   inputSchema: UserWorkSummaryInputSchema,
   //   definition: userWorkSummaryToolDefinition,
   // });
@@ -72,7 +72,7 @@ export function registerAllTools(): void {
   // ============ team_work_summary ============
   toolRegistry.register('team_work_summary', 'v1', {
     status: 'current',
-    handler: teamWorkSummary as (input: unknown) => Promise<unknown>,
+    handler: teamWorkSummary as (input: unknown, signal?: AbortSignal) => Promise<unknown>,
     inputSchema: TeamWorkSummaryInputSchema,
     definition: teamWorkSummaryToolDefinition,
   });
@@ -80,7 +80,7 @@ export function registerAllTools(): void {
   // ============ list_users ============
   toolRegistry.register('list_users', 'v1', {
     status: 'current',
-    handler: listUsers as (input: unknown) => Promise<unknown>,
+    handler: listUsers as (input: unknown, signal?: AbortSignal) => Promise<unknown>,
     inputSchema: ListUsersInputSchema,
     definition: listUsersToolDefinition,
   });
@@ -88,7 +88,7 @@ export function registerAllTools(): void {
   // ============ list_workloads ============
   toolRegistry.register('list_workloads', 'v1', {
     status: 'current',
-    handler: listWorkloads as (input: unknown) => Promise<unknown>,
+    handler: listWorkloads as (input: unknown, signal?: AbortSignal) => Promise<unknown>,
     inputSchema: ListWorkloadsInputSchema,
     definition: listWorkloadsToolDefinition,
   });
@@ -96,7 +96,7 @@ export function registerAllTools(): void {
   // ============ get_work_item ============
   toolRegistry.register('get_work_item', 'v1', {
     status: 'current',
-    handler: getWorkItem as (input: unknown) => Promise<unknown>,
+    handler: getWorkItem as (input: unknown, signal?: AbortSignal) => Promise<unknown>,
     inputSchema: GetWorkItemInputSchema,
     definition: getWorkItemToolDefinition,
   });

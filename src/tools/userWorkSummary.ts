@@ -39,11 +39,11 @@ export interface UserWorkSummaryOutput {
     };
     total_hours: number;
     by_project: Array<{
-      project: { id: string; identifier: string; name: string; type?: string };
+      project: { id: string | null; identifier: string | null; name: string; type?: string };
       hours: number;
     }>;
     by_work_item: Array<{
-      work_item: { id: string; identifier: string; title: string; project: { id: string; identifier: string; name: string; type?: string } };
+      work_item: { id: string; identifier: string; title: string; project: { id: string | null; identifier: string | null; name: string; type?: string } };
       hours: number;
     }>;
     by_day?: Array<{ date: string; hours: number }>;
@@ -58,7 +58,7 @@ export interface UserWorkSummaryOutput {
     work_item: {
       identifier: string;
       title: string;
-      project: { id: string; identifier: string; name: string; type?: string };
+      project: { id: string | null; identifier: string | null; name: string; type?: string };
     } | null;
     description?: string;
   }>;
@@ -69,6 +69,7 @@ export interface UserWorkSummaryOutput {
     time_sliced: boolean;
     pagination_truncated: boolean;
     details_truncated: boolean;
+    truncation_reasons?: string[];
   };
 }
 
@@ -87,12 +88,12 @@ export type UserWorkSummaryResult = UserWorkSummaryOutput | UserWorkSummaryError
 
 // ============ Tool 实现 ============
 
-export async function userWorkSummary(input: UserWorkSummaryInput): Promise<UserWorkSummaryResult> {
+export async function userWorkSummary(input: UserWorkSummaryInput, signal?: AbortSignal): Promise<UserWorkSummaryResult> {
   logger.info({ input }, 'user_work_summary called');
 
   try {
     // 1. 解析用户
-    const userResult = await userService.resolveUser(input.user);
+    const userResult = await userService.resolveUser(input.user, signal);
 
     if (userResult.ambiguous) {
       logger.warn({
@@ -138,6 +139,7 @@ export async function userWorkSummary(input: UserWorkSummaryInput): Promise<User
       {
         groupBy: input.group_by as GroupBy,
         topN: input.top_n,
+        signal,
       }
     );
 

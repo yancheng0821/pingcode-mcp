@@ -29,6 +29,14 @@ interface RetryMetric {
   rateLimitExhausted: number;
 }
 
+interface DataQualityMetric {
+  totalResponses: number;
+  paginationTruncated: number;
+  detailsTruncated: number;
+  timeSliced: number;
+  circuitBreakerTriggered: number;
+}
+
 class Metrics {
   // 按工具/端点统计请求
   private requests = new Map<string, RequestMetric>();
@@ -41,6 +49,15 @@ class Metrics {
 
   // 重试统计
   private retries: RetryMetric = { totalRetries: 0, rateLimitExhausted: 0 };
+
+  // 数据质量统计
+  private dataQuality: DataQualityMetric = {
+    totalResponses: 0,
+    paginationTruncated: 0,
+    detailsTruncated: 0,
+    timeSliced: 0,
+    circuitBreakerTriggered: 0,
+  };
 
   // 启动时间
   private readonly startTime = Date.now();
@@ -131,6 +148,35 @@ class Metrics {
   }
 
   /**
+   * 记录 circuit breaker 触发
+   */
+  recordCircuitBreakerTriggered(): void {
+    this.dataQuality.circuitBreakerTriggered++;
+  }
+
+  /**
+   * 记录工具响应的数据质量标志
+   */
+  recordDataQuality(flags: {
+    paginationTruncated?: boolean;
+    detailsTruncated?: boolean;
+    timeSliced?: boolean;
+  }): void {
+    this.dataQuality.totalResponses++;
+    if (flags.paginationTruncated) this.dataQuality.paginationTruncated++;
+    if (flags.detailsTruncated) this.dataQuality.detailsTruncated++;
+    if (flags.timeSliced) this.dataQuality.timeSliced++;
+  }
+
+  /**
+   * 获取当前截断率 (pagination_truncated / total)
+   */
+  getTruncationRate(): number {
+    if (this.dataQuality.totalResponses === 0) return 0;
+    return this.dataQuality.paginationTruncated / this.dataQuality.totalResponses;
+  }
+
+  /**
    * 获取所有指标快照
    */
   getSnapshot(): MetricsSnapshot {
@@ -176,6 +222,16 @@ class Metrics {
         total_retries: this.retries.totalRetries,
         rate_limit_exhausted: this.retries.rateLimitExhausted,
       },
+      data_quality: {
+        total_responses: this.dataQuality.totalResponses,
+        pagination_truncated: this.dataQuality.paginationTruncated,
+        details_truncated: this.dataQuality.detailsTruncated,
+        time_sliced: this.dataQuality.timeSliced,
+        circuit_breaker_triggered: this.dataQuality.circuitBreakerTriggered,
+        truncation_rate: this.dataQuality.totalResponses > 0
+          ? this.dataQuality.paginationTruncated / this.dataQuality.totalResponses
+          : 0,
+      },
     };
   }
 
@@ -187,6 +243,7 @@ class Metrics {
     this.cache = { hits: 0, misses: 0 };
     this.slices = { totalSlices: 0, slicedRequests: 0 };
     this.retries = { totalRetries: 0, rateLimitExhausted: 0 };
+    this.dataQuality = { totalResponses: 0, paginationTruncated: 0, detailsTruncated: 0, timeSliced: 0, circuitBreakerTriggered: 0 };
     logger.info('Metrics reset');
   }
 
@@ -230,6 +287,14 @@ export interface MetricsSnapshot {
   retries: {
     total_retries: number;
     rate_limit_exhausted: number;
+  };
+  data_quality: {
+    total_responses: number;
+    pagination_truncated: number;
+    details_truncated: number;
+    time_sliced: number;
+    circuit_breaker_triggered: number;
+    truncation_rate: number;
   };
 }
 

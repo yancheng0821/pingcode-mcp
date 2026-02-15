@@ -31,16 +31,16 @@ export class UserService {
   /**
    * 获取所有用户
    */
-  async getAllUsers(): Promise<UserInfo[]> {
-    const users = await listUsers();
+  async getAllUsers(signal?: AbortSignal): Promise<UserInfo[]> {
+    const users = await listUsers({}, signal);
     return users.map(this.toUserInfo);
   }
 
   /**
    * 根据 ID 获取用户
    */
-  async getUser(userId: string): Promise<UserInfo | null> {
-    const user = await getUserById(userId);
+  async getUser(userId: string, signal?: AbortSignal): Promise<UserInfo | null> {
+    const user = await getUserById(userId, signal);
     return user ? this.toUserInfo(user) : null;
   }
 
@@ -66,9 +66,9 @@ export class UserService {
   /**
    * 解析用户输入（支持 ID 或姓名）
    */
-  async resolveUser(input: { id?: string; name?: string }): Promise<UserMatchResult> {
+  async resolveUser(input: { id?: string; name?: string }, signal?: AbortSignal): Promise<UserMatchResult> {
     if (input.id) {
-      const user = await this.getUser(input.id);
+      const user = await this.getUser(input.id, signal);
       return {
         user,
         candidates: user ? [{ user, matchType: 'exact' }] : [],
@@ -90,8 +90,8 @@ export class UserService {
   /**
    * 批量获取用户信息
    */
-  async getUsersMap(userIds: string[]): Promise<Map<string, UserInfo>> {
-    const users = await getUsersByIds(userIds);
+  async getUsersMap(userIds: string[], signal?: AbortSignal): Promise<Map<string, UserInfo>> {
+    const users = await getUsersByIds(userIds, signal);
     const result = new Map<string, UserInfo>();
 
     for (const [id, user] of users) {

@@ -21,7 +21,7 @@ export interface ToolVersion {
   deprecatedAt?: string;      // ISO 日期，何时标记废弃
   removalDate?: string;       // ISO 日期，计划移除日期
   migrationGuide?: string;    // 升级指南
-  handler: (input: unknown) => Promise<unknown>;
+  handler: (input: unknown, signal?: AbortSignal) => Promise<unknown>;
   inputSchema: z.ZodTypeAny;
   definition: ToolDefinition;
 }
@@ -62,7 +62,7 @@ class ToolRegistry {
       deprecatedAt?: string;
       removalDate?: string;
       migrationGuide?: string;
-      handler: (input: unknown) => Promise<unknown>;
+      handler: (input: unknown, signal?: AbortSignal) => Promise<unknown>;
       inputSchema: z.ZodTypeAny;
       definition: Omit<ToolDefinition, 'name'>;
     }
@@ -162,7 +162,7 @@ class ToolRegistry {
   /**
    * 调用工具（支持别名和显式版本）
    */
-  async callTool(name: string, args: unknown): Promise<{ result: unknown; warnings: string[] }> {
+  async callTool(name: string, args: unknown, signal?: AbortSignal): Promise<{ result: unknown; warnings: string[] }> {
     const warnings: string[] = [];
 
     // 解析工具名和版本
@@ -198,7 +198,7 @@ class ToolRegistry {
     const parsed = toolVersion.inputSchema.parse(args);
 
     // 调用处理器
-    const result = await toolVersion.handler(parsed);
+    const result = await toolVersion.handler(parsed, signal);
 
     return { result, warnings };
   }

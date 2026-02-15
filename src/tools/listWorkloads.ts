@@ -57,17 +57,17 @@ export interface WorkloadRecord {
         id: string;
         identifier: string;
         title: string;
-        project: { id: string; name: string } | null;
+        project: { id: string | null; name: string } | null;
     } | null;
     project: {
-        id: string;
-        identifier: string;
+        id: string | null;
+        identifier: string | null;
         name: string;
     } | null;
     description?: string;
     // 原始字段
     user_id: string;
-    project_id: string;
+    project_id: string | null;
     work_item_id?: string;
     date_at: number;
     type?: string;
@@ -82,6 +82,7 @@ export interface ListWorkloadsOutput {
         time_sliced: boolean;
         pagination_truncated: boolean;
         result_truncated: boolean;
+        truncation_reasons?: string[];
     };
 }
 
@@ -95,7 +96,7 @@ export type ListWorkloadsResult = ListWorkloadsOutput | ListWorkloadsError;
 
 // ============ Tool 实现 ============
 
-export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWorkloadsResult> {
+export async function listWorkloads(input: ListWorkloadsInput, signal?: AbortSignal): Promise<ListWorkloadsResult> {
     logger.info({ input }, 'list_workloads called');
 
     try {
@@ -135,7 +136,7 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
         if (!filterUserId && input.user) {
             if (input.user.id) {
                 filterUserId = input.user.id;
-                const user = await userService.getUser(filterUserId);
+                const user = await userService.getUser(filterUserId, signal);
                 if (!user) {
                     return {
                         error: `User not found: ${filterUserId}`,
@@ -143,7 +144,7 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
                     };
                 }
             } else if (input.user.name) {
-                const resolved = await userService.resolveUser({ name: input.user.name });
+                const resolved = await userService.resolveUser({ name: input.user.name }, signal);
                 if (!resolved.user) {
                     if (resolved.ambiguous) {
                         return {
@@ -184,10 +185,11 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
             projectId: filterProjectId,
             principalType: apiPrincipalType,
             principalId: apiPrincipalId,
+            signal,
         });
 
         // 5. 获取工作项详情（可选增强）
-        const { workItems } = await workItemService.enrichWorkloadsWithWorkItems(result.workloads);
+        const { workItems } = await workItemService.enrichWorkloadsWithWorkItems(result.workloads, signal);
 
         // 6. 过滤
         let workloads = result.workloads;
@@ -217,7 +219,7 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
         const formattedWorkloads: WorkloadRecord[] = workloads.map(w => {
             // 获取工作项详情（优先使用缓存的详细信息）
             let workItem = null;
-            let projectInfo: { id: string; identifier?: string; name: string } | null = null;
+            let projectInfo: { id: string | null; identifier?: string | null; name: string } | null = null;
 
             if (w.work_item) {
                 const cachedWorkItem = workItems.get(w.work_item.id);
@@ -255,13 +257,13 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
                 work_item: workItem,
                 project: projectInfo ? {
                     id: projectInfo.id,
-                    identifier: projectInfo.identifier || '',
+                    identifier: projectInfo.identifier ?? null,
                     name: projectInfo.name,
                 } : null,
                 description: w.description,
                 // 原始字段
                 user_id: w.report_by.id,
-                project_id: projectInfo?.id || '',
+                project_id: projectInfo?.id ?? null,
                 work_item_id: w.work_item?.id,
                 date_at: w.report_at,
                 type: w.type,
@@ -277,6 +279,7 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
                 time_sliced: result.timeSliced,
                 pagination_truncated: result.paginationTruncated,
                 result_truncated: resultTruncated,
+                truncation_reasons: result.truncationReasons.length > 0 ? result.truncationReasons : undefined,
             },
         };
     } catch (error) {

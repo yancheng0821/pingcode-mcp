@@ -8,7 +8,7 @@ import type { PingCodeWorkItem } from '../types.js';
  * 获取工作项详情
  * GET /v1/project/work_items/{project_work_item_id}
  */
-export async function getWorkItem(workItemId: string): Promise<PingCodeWorkItem | null> {
+export async function getWorkItem(workItemId: string, signal?: AbortSignal): Promise<PingCodeWorkItem | null> {
   // Try cache first
   const cached = await cache.get<PingCodeWorkItem>(CacheKeys.workItem(workItemId));
   if (cached) {
@@ -17,7 +17,8 @@ export async function getWorkItem(workItemId: string): Promise<PingCodeWorkItem 
 
   try {
     const workItem = await apiClient.request<PingCodeWorkItem>(
-      `/v1/project/work_items/${workItemId}`
+      `/v1/project/work_items/${workItemId}`,
+      { signal }
     );
 
     // Cache the result
@@ -43,7 +44,8 @@ export async function getWorkItem(workItemId: string): Promise<PingCodeWorkItem 
  */
 export async function getWorkItemsBatch(
   workItemIds: string[],
-  concurrency: number = 10
+  concurrency: number = 10,
+  signal?: AbortSignal
 ): Promise<{
   items: Map<string, PingCodeWorkItem>;
   missingCount: number;
@@ -86,7 +88,7 @@ export async function getWorkItemsBatch(
       const batchResults = await Promise.all(
         batch.map(async (id) => {
           try {
-            const item = await fetchWorkItemDirect(id);
+            const item = await fetchWorkItemDirect(id, signal);
             return { id, item };
           } catch (error) {
             logger.error({ workItemId: id, error }, 'Failed to fetch work item');
@@ -127,10 +129,11 @@ export async function getWorkItemsBatch(
 /**
  * 直接从 API 获取工作项（不走缓存）
  */
-async function fetchWorkItemDirect(workItemId: string): Promise<PingCodeWorkItem | null> {
+async function fetchWorkItemDirect(workItemId: string, signal?: AbortSignal): Promise<PingCodeWorkItem | null> {
   try {
     return await apiClient.request<PingCodeWorkItem>(
-      `/v1/project/work_items/${workItemId}`
+      `/v1/project/work_items/${workItemId}`,
+      { signal }
     );
   } catch (error) {
     if (error instanceof PingCodeApiError && error.status === 404) {
@@ -144,7 +147,8 @@ async function fetchWorkItemDirect(workItemId: string): Promise<PingCodeWorkItem
  * 从工时记录中提取并获取所有关联的工作项
  */
 export async function getWorkItemsFromWorkloads(
-  workloads: Array<{ work_item?: { id: string } }>
+  workloads: Array<{ work_item?: { id: string } }>,
+  signal?: AbortSignal
 ): Promise<{
   items: Map<string, PingCodeWorkItem>;
   missingCount: number;
@@ -153,5 +157,5 @@ export async function getWorkItemsFromWorkloads(
     .map(w => w.work_item?.id)
     .filter((id): id is string => !!id);
 
-  return getWorkItemsBatch(workItemIds);
+  return getWorkItemsBatch(workItemIds, 10, signal);
 }

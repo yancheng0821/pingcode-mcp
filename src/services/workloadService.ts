@@ -59,6 +59,7 @@ export interface DataQuality {
     time_sliced: boolean;
     pagination_truncated: boolean;
     details_truncated: boolean;
+    truncation_reasons?: string[];
 }
 
 export interface UserWorkSummary {
@@ -150,6 +151,7 @@ export interface TeamWorkResult {
         time_sliced: boolean;
         pagination_truncated: boolean;
         details_truncated: boolean;
+        truncation_reasons?: string[];
     };
 }
 
@@ -168,22 +170,23 @@ export class WorkloadService {
         options: {
             groupBy?: GroupBy;
             topN?: number;
+            signal?: AbortSignal;
         } = {}
     ): Promise<UserWorkResult> {
-        const { groupBy = 'work_item', topN = 10 } = options;
+        const { groupBy = 'work_item', topN = 10, signal } = options;
 
         // 1. 获取用户信息
-        const user = await userService.getUser(userId);
+        const user = await userService.getUser(userId, signal);
         if (!user) {
             throw new Error(`User not found: ${userId}`);
         }
 
         // 2. 获取工时数据
-        const workloadsResult = await listUserWorkloads(userId, startAt, endAt);
-        const { workloads, timeSliced, paginationTruncated } = workloadsResult;
+        const workloadsResult = await listUserWorkloads(userId, startAt, endAt, signal);
+        const { workloads, timeSliced, paginationTruncated, truncationReasons } = workloadsResult;
 
         // 3. 获取工作项详情
-        const { workItems, missingCount } = await workItemService.enrichWorkloadsWithWorkItems(workloads);
+        const { workItems, missingCount } = await workItemService.enrichWorkloadsWithWorkItems(workloads, signal);
 
         // 4. 聚合计算
         const aggregated = this.aggregateWorkloads(workloads, workItems, groupBy, topN);
@@ -223,6 +226,7 @@ export class WorkloadService {
                 time_sliced: timeSliced,
                 pagination_truncated: paginationTruncated,
                 details_truncated: detailsTruncated,
+                truncation_reasons: truncationReasons.length > 0 ? truncationReasons : undefined,
             },
         };
     }
@@ -239,24 +243,26 @@ export class WorkloadService {
             groupBy?: TeamGroupBy;
             topN?: number;
             includeMatrix?: boolean;
+            includeZeroUsers?: boolean;
+            signal?: AbortSignal;
         } = {}
     ): Promise<TeamWorkResult> {
-        const { userIds, projectId, groupBy = 'user', topN = 5, includeMatrix = false } = options;
+        const { userIds, projectId, groupBy = 'user', topN = 5, includeMatrix = false, includeZeroUsers = true, signal } = options;
 
         // 1. 获取用户列表
         let targetUserIds: string[];
         if (userIds && userIds.length > 0) {
             targetUserIds = userIds;
         } else {
-            const allUsers = await userService.getAllUsers();
+            const allUsers = await userService.getAllUsers(signal);
             targetUserIds = allUsers.map(u => u.id);
         }
 
         // 2. 批量获取工时数据（projectId 由 API 服务端 pilot_id 过滤）
-        const workloadsMap = await listWorkloadsForUsers(targetUserIds, startAt, endAt, { projectId });
+        const workloadsMap = await listWorkloadsForUsers(targetUserIds, startAt, endAt, { projectId, signal });
 
         // 3. 获取用户信息
-        const usersMap = await userService.getUsersMap(targetUserIds);
+        const usersMap = await userService.getUsersMap(targetUserIds, signal);
 
         // 4. 收集所有工时记录
         const allWorkloads: PingCodeWorkload[] = [];
@@ -265,7 +271,7 @@ export class WorkloadService {
         }
 
         // 5. 获取工作项详情
-        const { workItems, missingCount } = await workItemService.enrichWorkloadsWithWorkItems(allWorkloads);
+        const { workItems, missingCount } = await workItemService.enrichWorkloadsWithWorkItems(allWorkloads, signal);
 
         // 6. projectId 已在 API 层过滤（pilot_id），无需本地二次过滤。
         //    missingCount 即为目标项目作用域内的精确缺失数。
@@ -279,14 +285,22 @@ export class WorkloadService {
         let totalWorkloadsCount = 0;
         let anyTimeSliced = false;
         let anyPaginationTruncated = false;
+        const allTruncationReasons = new Set<string>();
+
+        // Track which users have been processed (for 0-hour user inclusion)
+        const processedUserIds = new Set<string>();
 
         for (const [userId, result] of filteredWorkloadsMap) {
             const user = usersMap.get(userId);
             if (!user) continue;
 
+            // Skip users with no workloads when includeZeroUsers is false
+            if (!includeZeroUsers && result.workloads.length === 0) continue;
+
+            processedUserIds.add(userId);
+
             const aggregated = this.aggregateWorkloads(result.workloads, workItems, groupBy as GroupBy, topN);
 
-            // 根据 groupBy 构建成员聚合数据（包含 0 工时用户 — P1-2 修复）
             const memberSummary: TeamMemberSummary = {
                 user,
                 total_hours: aggregated.totalHours,
@@ -342,7 +356,7 @@ export class WorkloadService {
                             identifier: embeddedWorkItem.identifier,
                             title: embeddedWorkItem.title,
                             type: embeddedWorkItem.type,
-                            project: { id: '', identifier: '', name: 'Unknown' },
+                            project: { id: null, identifier: null, name: 'Unknown' },
                         };
                     }
                 }
@@ -360,6 +374,48 @@ export class WorkloadService {
             totalWorkloadsCount += result.workloads.length;
             anyTimeSliced = anyTimeSliced || result.timeSliced;
             anyPaginationTruncated = anyPaginationTruncated || result.paginationTruncated;
+            if (result.truncationReasons) {
+                for (const reason of result.truncationReasons) {
+                    allTruncationReasons.add(reason);
+                }
+            }
+        }
+
+        // 包含 0 工时用户：usersMap 中存在但 workloadsMap 中无记录的用户
+        if (includeZeroUsers) {
+            for (const [userId, user] of usersMap) {
+                if (processedUserIds.has(userId)) continue;
+                const memberSummary: TeamMemberSummary = {
+                    user,
+                    total_hours: 0,
+                };
+                switch (groupBy) {
+                    case 'day':
+                        memberSummary.by_day = [];
+                        break;
+                    case 'week':
+                        memberSummary.by_week = [];
+                        break;
+                    case 'month':
+                        memberSummary.by_month = [];
+                        break;
+                    case 'project':
+                        memberSummary.by_project = [];
+                        break;
+                    case 'work_item':
+                        memberSummary.by_work_item = [];
+                        break;
+                    case 'type':
+                        memberSummary.by_type = [];
+                        break;
+                    case 'user':
+                    default:
+                        memberSummary.top_projects = [];
+                        memberSummary.top_work_items = [];
+                        break;
+                }
+                members.push(memberSummary);
+            }
         }
 
         // 8. 按总工时排序
@@ -395,6 +451,7 @@ export class WorkloadService {
                 time_sliced: anyTimeSliced,
                 pagination_truncated: anyPaginationTruncated,
                 details_truncated: detailsTruncated,
+                truncation_reasons: allTruncationReasons.size > 0 ? [...allTruncationReasons] : undefined,
             },
         };
 
@@ -475,7 +532,7 @@ export class WorkloadService {
                 project = cachedWorkItem?.project;
             }
 
-            if (project) {
+            if (project && project.id) {
                 const existingProject = projectHours.get(project.id);
                 if (existingProject) {
                     existingProject.hours += hours;
@@ -494,7 +551,7 @@ export class WorkloadService {
                     identifier: embeddedWorkItem.identifier,
                     title: embeddedWorkItem.title,
                     type: embeddedWorkItem.type,
-                    project: project || { id: '', identifier: '', name: 'Unknown' },
+                    project: project || { id: null, identifier: null, name: 'Unknown' },
                 };
 
                 const existing = workItemHours.get(workItem.id);
@@ -554,7 +611,7 @@ export class WorkloadService {
                             identifier: w.work_item.identifier,
                             title: w.work_item.title,
                             type: w.work_item.type,
-                            project: { id: '', identifier: '', name: 'Unknown' },
+                            project: { id: null, identifier: null, name: 'Unknown' },
                         };
                     }
                 }

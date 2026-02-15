@@ -22,7 +22,7 @@ export interface UserMatch {
  * 缓存策略：全量用户列表缓存 TTL = config.cache.ttlUsers (默认 1h)。
  * 关键词过滤在缓存之后本地完成。
  */
-export async function listUsers(params: ListUsersParams = {}): Promise<PingCodeUser[]> {
+export async function listUsers(params: ListUsersParams = {}, signal?: AbortSignal): Promise<PingCodeUser[]> {
   const { keyword, pageSize = 100, pageIndex = 0 } = params;
 
   // 尝试从缓存读取全量用户列表
@@ -43,6 +43,7 @@ export async function listUsers(params: ListUsersParams = {}): Promise<PingCodeU
             page_size: pageSize,
             page_index: currentPage,
           },
+          signal,
         }
       );
 
@@ -79,9 +80,9 @@ export async function listUsers(params: ListUsersParams = {}): Promise<PingCodeU
 /**
  * 根据 ID 获取用户
  */
-export async function getUserById(userId: string): Promise<PingCodeUser | null> {
+export async function getUserById(userId: string, signal?: AbortSignal): Promise<PingCodeUser | null> {
   // 不缓存，直接从列表查找
-  const users = await listUsers();
+  const users = await listUsers({}, signal);
   return users.find(u => u.id === userId) || null;
 }
 
@@ -173,11 +174,11 @@ export async function matchUserByName(
 /**
  * 批量获取用户详情
  */
-export async function getUsersByIds(userIds: string[]): Promise<Map<string, PingCodeUser>> {
+export async function getUsersByIds(userIds: string[], signal?: AbortSignal): Promise<Map<string, PingCodeUser>> {
   if (userIds.length === 0) return new Map();
 
   const uniqueIds = new Set(userIds);
-  const users = await listUsers();
+  const users = await listUsers({}, signal);
   const result = new Map<string, PingCodeUser>();
 
   for (const user of users) {

@@ -13,8 +13,10 @@
     "test:quiet": "node tests/regression.mjs 2>&1 | grep -v '{\"level\"'",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
-    "test:unit": "vitest run",
-    "test:unit:watch": "vitest"
+    "test:unit": "vitest run tests/unit",
+    "test:unit:watch": "vitest tests/unit",
+    "test:e2e": "vitest run tests/e2e",
+    "test:all": "vitest run"
   },
   "keywords": [
     "mcp",

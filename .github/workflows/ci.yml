@@ -39,6 +39,12 @@ jobs:
           PINGCODE_TOKEN: test-token
           LOG_LEVEL: error
 
+      - name: E2E tests (mock server)
+        run: npm run test:e2e
+        env:
+          PINGCODE_TOKEN: test-token
+          LOG_LEVEL: error
+
       - name: HTTP security tests
         run: npm run test:http
         env:

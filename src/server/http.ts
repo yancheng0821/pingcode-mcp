@@ -5,6 +5,7 @@ import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { metrics } from '../utils/metrics.js';
 import { randomUUID } from 'node:crypto';
+import { type UserContext } from '../auth/userContext.js';
 
 // 解析允许的 Origin 列表（启动时计算一次）
 const allowedOrigins = new Set(
@@ -16,27 +17,24 @@ const allowedOrigins = new Set(
 /**
  * 验证 Origin（防 DNS rebinding 攻击）
  * - 无 Origin 头（非浏览器请求）：放行
+ * - 未配置 allowlist（空）+ 有 Origin：拒绝（default-deny）
+ * - 配置了 allowlist 且 Origin 在列表中：放行
  * - 配置了 allowlist 且 Origin 不在列表中：拒绝
- * - 未配置 allowlist：放行（向后兼容）
  */
-function isOriginAllowed(origin: string | undefined): boolean {
+export function isOriginAllowed(origin: string | undefined): boolean {
   if (!origin) return true;
-  if (allowedOrigins.size === 0) return true;
+  if (allowedOrigins.size === 0) return false;
   return allowedOrigins.has(origin);
 }
 
 /**
  * 设置 CORS 响应头
  */
-function setCorsHeaders(res: ServerResponse, origin: string | undefined): void {
-  // 根据 allowlist 决定 Access-Control-Allow-Origin
+export function setCorsHeaders(res: ServerResponse, origin: string | undefined): void {
+  // 仅当 origin 在白名单中才设置 ACAO；否则不设置（浏览器会拦截）
   if (origin && allowedOrigins.has(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
-  } else if (allowedOrigins.size === 0) {
-    // 未配置 allowlist 时保持开放（向后兼容，建议生产环境配置）
-    res.setHeader('Access-Control-Allow-Origin', '*');
   }
-  // 配置了 allowlist 但 origin 不匹配时不设置 Allow-Origin（浏览器会拦截）
 
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers',
@@ -45,33 +43,75 @@ function setCorsHeaders(res: ServerResponse, origin: string | undefined): void {
 }
 
 /**
+ * Parse API keys from both MCP_API_KEY (legacy) and MCP_API_KEYS (multi-key).
+ * MCP_API_KEYS format: "key1:id1,key2:id2" or just "key1,key2" (auto-generates ids)
+ * Returns Map<key, keyId>
+ */
+function parseApiKeys(): Map<string, string> {
+  const keys = new Map<string, string>();
+
+  // Legacy single key
+  if (config.auth.apiKey) {
+    keys.set(config.auth.apiKey, 'default');
+  }
+
+  // Multi-key
+  if (config.auth.apiKeys) {
+    for (const entry of config.auth.apiKeys.split(',')) {
+      const trimmed = entry.trim();
+      if (!trimmed) continue;
+      const colonIndex = trimmed.indexOf(':');
+      if (colonIndex > 0) {
+        const key = trimmed.slice(0, colonIndex);
+        const id = trimmed.slice(colonIndex + 1);
+        keys.set(key, id);
+      } else {
+        // No id provided — use position-based id
+        keys.set(trimmed, `key-${keys.size}`);
+      }
+    }
+  }
+
+  return keys;
+}
+
+// Parse once at module load
+const apiKeyMap = parseApiKeys();
+
+/**
  * 验证 API Key
  * 支持 Authorization: Bearer <key> 或 X-API-Key: <key>
+ * Returns { valid, keyId } for audit logging
  */
-function validateApiKey(req: IncomingMessage): boolean {
-  // 如果未配置 API Key，跳过验证
-  if (!config.auth.apiKey) {
-    return true;
+export function validateApiKey(req: IncomingMessage): { valid: boolean; keyId?: string } {
+  // 如果未配置任何 API Key，跳过验证
+  if (apiKeyMap.size === 0) {
+    return { valid: true };
   }
 
   const authHeader = req.headers['authorization'];
-  const apiKeyHeader = req.headers['x-api-key'];
+  const apiKeyHeader = req.headers['x-api-key'] as string | undefined;
 
   // 检查 Authorization: Bearer <key>
   if (authHeader) {
     const match = authHeader.match(/^Bearer\s+(.+)$/i);
-    if (match && match[1] === config.auth.apiKey) {
-      return true;
+    if (match) {
+      const keyId = apiKeyMap.get(match[1]);
+      if (keyId) return { valid: true, keyId };
     }
   }
 
   // 检查 X-API-Key: <key>
-  if (apiKeyHeader === config.auth.apiKey) {
-    return true;
+  if (apiKeyHeader) {
+    const keyId = apiKeyMap.get(apiKeyHeader);
+    if (keyId) return { valid: true, keyId };
   }
 
-  return false;
+  return { valid: false };
 }
+
+// Export for testing
+export { parseApiKeys, apiKeyMap };
 
 /**
  * 获取客户端 IP（支持反向代理）
@@ -98,7 +138,7 @@ const MAX_SESSIONS = config.server.httpMaxSessions;
 const SESSION_TTL_MS = config.server.httpSessionTtlMs;
 const SESSION_CLEANUP_INTERVAL_MS = Math.min(60_000, Math.max(1_000, Math.floor(SESSION_TTL_MS / 2)));
 
-export async function startHttpServer(serverFactory: () => Server): Promise<void> {
+export async function startHttpServer(serverFactory: (ctx?: UserContext) => Server): Promise<void> {
   // 存储活跃的 transport 实例（按 session ID）
   const transports = new Map<string, StreamableHTTPServerTransport>();
   const sessionLastActive = new Map<string, number>();
@@ -161,12 +201,16 @@ export async function startHttpServer(serverFactory: () => Server): Promise<void
     }
 
     // API Key 验证（以下端点需要鉴权）
-    if (!validateApiKey(req)) {
+    const authResult = validateApiKey(req);
+    if (!authResult.valid) {
       const clientIp = getClientIp(req);
       logger.warn({ clientIp, path }, 'Unauthorized request');
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unauthorized', message: 'Invalid or missing API key' }));
       return;
+    }
+    if (authResult.keyId) {
+      logger.debug({ keyId: authResult.keyId, path }, 'Authenticated request');
     }
 
     // MCP 端点 - DELETE（终止 session）
@@ -224,8 +268,23 @@ export async function startHttpServer(serverFactory: () => Server): Promise<void
             sessionIdGenerator: () => randomUUID(),
           });
 
+          // Build UserContext for user-mode sessions
+          let sessionUserContext: UserContext | undefined;
+          if (config.pingcode.tokenMode === 'user') {
+            const xUserId = req.headers['x-user-id'] as string | undefined;
+            if (!xUserId) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                error: 'TOKEN_MODE_USER_CONTEXT_REQUIRED',
+                message: 'X-User-Id header is required when TOKEN_MODE=user',
+              }));
+              return;
+            }
+            sessionUserContext = { userId: xUserId, tokenMode: 'user' };
+          }
+
           // 为新 session 创建独立的 MCP Server（SDK 要求每个 transport 对应一个 Server 实例）
-          const sessionServer = serverFactory();
+          const sessionServer = serverFactory(sessionUserContext);
           await sessionServer.connect(transport);
 
           // 清理关闭的连接

@@ -99,7 +99,8 @@ metrics.getSnapshot() → {
   requests: { total, errors, error_rate, by_endpoint },
   cache: { hits, misses, hit_rate },
   time_slicing: { sliced_requests, total_slices },
-  retries: { total_retries, rate_limit_exhausted }
+  retries: { total_retries, rate_limit_exhausted },
+  data_quality: { total_responses, pagination_truncated, details_truncated, time_sliced, truncation_rate }
 }
 ```
 
@@ -117,6 +118,7 @@ TRUST_PROXY=false
 TIMEZONE=Asia/Shanghai
 LOG_LEVEL=info
 NAME_MATCH_STRATEGY=best|strict|prompt
+TRUNCATION_ALERT_THRESHOLD=0.3  # 截断率超过此阈值时产生强警告 (0-1)
 ```
 
 **注意**：HTTP 模式强制要求 `MCP_API_KEY`，否则启动失败。

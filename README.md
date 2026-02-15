@@ -73,6 +73,59 @@ TRANSPORT_MODE=stdio
 
 重启 MCP 客户端（如 Claude Desktop），输入：`查询团队本月的工时汇总`
 
+### 6. HTTP 部署（可选）
+
+如需通过 HTTP 暴露 MCP 服务（例如网关/容器场景），可使用 `TRANSPORT_MODE=http`。
+
+1. 配置环境变量（示例）：
+
+```bash
+PINGCODE_TOKEN=你的access_token
+TRANSPORT_MODE=http
+HTTP_PORT=3000
+HTTP_HOST=127.0.0.1
+
+# 二选一：单 key 或多 key
+MCP_API_KEY=your-api-key
+# MCP_API_KEYS=keyA:prod,keyB:staging
+
+# 建议配置（浏览器/跨域场景）
+ALLOWED_ORIGINS=https://your-app.example.com
+```
+
+2. 启动服务：
+
+```bash
+npm run build
+npm run start
+```
+
+3. 健康检查：
+
+```bash
+curl -s http://127.0.0.1:3000/health
+curl -s http://127.0.0.1:3000/metrics
+```
+
+4. MCP 调用示例（HTTP）：
+
+```bash
+curl -s http://127.0.0.1:3000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-key" \
+  -d '{
+    "jsonrpc":"2.0",
+    "id":"1",
+    "method":"tools/list",
+    "params":{}
+  }'
+```
+
+> 说明：
+> - HTTP 模式必须配置 `MCP_API_KEY` 或 `MCP_API_KEYS`。
+> - 若请求带 `Origin`，必须命中 `ALLOWED_ORIGINS` 白名单。
+> - `TOKEN_MODE=user` 下，HTTP 会话初始化请求需携带 `X-User-Id`。
+
 ---
 
 ## 功能
@@ -110,7 +163,7 @@ TRANSPORT_MODE=stdio
 | `HTTP_PORT` | HTTP 端口 | `3000` |
 | `HTTP_HOST` | HTTP 绑定地址 | `127.0.0.1` |
 | `MCP_API_KEY` | API Key（HTTP 模式必填） | - |
-| `ALLOWED_ORIGINS` | 允许的 Origin（逗号分隔） | 空（全放行） |
+| `ALLOWED_ORIGINS` | 允许的 Origin（逗号分隔） | 空（有 Origin 请求默认拒绝） |
 | `TRUST_PROXY` | 信任反向代理头 | `false` |
 | `HTTP_MAX_SESSIONS` | HTTP 最大并发 session 数 | `100` |
 | `HTTP_SESSION_TTL_MS` | Session 空闲过期时间（ms） | `1800000` |
@@ -118,6 +171,8 @@ TRANSPORT_MODE=stdio
 | `TIMEZONE` | 时区 | `Asia/Shanghai` |
 | `NAME_MATCH_STRATEGY` | 姓名匹配策略 | `best` |
 | `LOG_LEVEL` | 日志级别 | `info` |
+
+> 注意：HTTP 模式下若请求带 `Origin` 头，必须配置 `ALLOWED_ORIGINS`；未配置时按 default-deny 拒绝（非浏览器无 `Origin` 请求不受影响）。
 
 ---
 
@@ -135,10 +190,28 @@ TRANSPORT_MODE=stdio
 
 ```bash
 npm run dev          # 开发模式
+npm run test:unit    # 单元测试（Vitest，离线可跑）
 npm test             # 回归测试（51 个用例）
+npm run test:quiet   # 回归测试（过滤结构化日志）
 npm run test:http    # HTTP 安全测试（22 个用例）
 npm run typecheck    # 类型检查
 ```
+
+## CI 门禁
+
+仓库已配置 GitHub Actions（`.github/workflows/ci.yml`）：
+
+- `push/pull_request`：自动执行 `typecheck`、`build`、`test:unit`、`test:http`
+- `schedule`（每日 UTC 02:00）：执行 `tests/regression.mjs`（需配置 `PINGCODE_TOKEN` secret）
+
+## 发布前检查清单
+
+- [ ] 本地通过：`npm run typecheck`
+- [ ] 本地通过：`npm run test:unit`
+- [ ] 本地通过：`npm run test:http`
+- [ ] 真实环境回归通过：`npm run test:quiet`
+- [ ] CI `build-and-test` 绿灯
+- [ ] 夜间回归任务可正常触发（已配置 `PINGCODE_TOKEN` secret）
 
 ## License
 

@@ -26,8 +26,8 @@ export interface GetWorkItemOutput {
       display_name: string;
     };
     project: {
-      id: string;
-      identifier: string;
+      id: string | null;
+      identifier: string | null;
       name: string;
       type?: string;
     };
@@ -43,11 +43,11 @@ export type GetWorkItemResult = GetWorkItemOutput | GetWorkItemError;
 
 // ============ Tool 实现 ============
 
-export async function getWorkItem(input: GetWorkItemInput): Promise<GetWorkItemResult> {
+export async function getWorkItem(input: GetWorkItemInput, signal?: AbortSignal): Promise<GetWorkItemResult> {
   logger.info({ input }, 'get_work_item called');
 
   try {
-    const workItem = await workItemService.getWorkItem(input.id);
+    const workItem = await workItemService.getWorkItem(input.id, signal);
 
     if (!workItem) {
       return {

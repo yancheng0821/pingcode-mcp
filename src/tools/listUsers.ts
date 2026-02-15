@@ -47,11 +47,11 @@ export type ListUsersResult = ListUsersOutput | ListUsersError;
 
 // ============ Tool 实现 ============
 
-export async function listUsers(input: ListUsersInput): Promise<ListUsersResult> {
+export async function listUsers(input: ListUsersInput, signal?: AbortSignal): Promise<ListUsersResult> {
   logger.info({ input }, 'list_users called');
 
   try {
-    const allUsers = await userService.getAllUsers();
+    const allUsers = await userService.getAllUsers(signal);
 
     let filteredUsers = allUsers;
 

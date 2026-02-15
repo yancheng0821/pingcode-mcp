@@ -16,6 +16,7 @@ export const TeamWorkSummaryInputSchema = z.object({
   group_by: z.enum(['user', 'project', 'work_item', 'day', 'week', 'month', 'type']).optional().default('user'),
   top_n: z.number().optional().default(5),
   include_matrix: z.boolean().optional().default(false),
+  include_zero_users: z.boolean().optional().default(true),
 });
 
 export type TeamWorkSummaryInput = z.infer<typeof TeamWorkSummaryInputSchema>;
@@ -39,11 +40,11 @@ export interface TeamWorkSummaryOutput {
       total_hours: number;
       // 默认输出（group_by=user 时）
       top_projects?: Array<{
-        project: { id: string; identifier: string; name: string; type?: string };
+        project: { id: string | null; identifier: string | null; name: string; type?: string };
         hours: number;
       }>;
       top_work_items?: Array<{
-        work_item: { id: string; identifier: string; title: string; project: { id: string; identifier: string; name: string; type?: string } };
+        work_item: { id: string; identifier: string; title: string; project: { id: string | null; identifier: string | null; name: string; type?: string } };
         hours: number;
       }>;
       // 时间维度聚合
@@ -51,8 +52,8 @@ export interface TeamWorkSummaryOutput {
       by_week?: Array<{ week: string; hours: number }>;
       by_month?: Array<{ month: string; hours: number }>;
       // 项目/工作项维度
-      by_project?: Array<{ project: { id: string; identifier: string; name: string; type?: string }; hours: number }>;
-      by_work_item?: Array<{ work_item: { id: string; identifier: string; title: string; project: { id: string; identifier: string; name: string; type?: string } }; hours: number }>;
+      by_project?: Array<{ project: { id: string | null; identifier: string | null; name: string; type?: string }; hours: number }>;
+      by_work_item?: Array<{ work_item: { id: string; identifier: string; title: string; project: { id: string | null; identifier: string | null; name: string; type?: string } }; hours: number }>;
       // 类型维度
       by_type?: Array<{ type: string; hours: number }>;
     }>;
@@ -61,8 +62,8 @@ export interface TeamWorkSummaryOutput {
     by_week?: Array<{ week: string; hours: number }>;
     by_month?: Array<{ month: string; hours: number }>;
     // 按项目/工作项聚合
-    by_project?: Array<{ project: { id: string; identifier: string; name: string; type?: string }; hours: number }>;
-    by_work_item?: Array<{ work_item: { id: string; identifier: string; title: string; project: { id: string; identifier: string; name: string; type?: string } }; hours: number }>;
+    by_project?: Array<{ project: { id: string | null; identifier: string | null; name: string; type?: string }; hours: number }>;
+    by_work_item?: Array<{ work_item: { id: string; identifier: string; title: string; project: { id: string | null; identifier: string | null; name: string; type?: string } }; hours: number }>;
     // 按类型聚合
     by_type?: Array<{ type: string; hours: number }>;
   };
@@ -72,7 +73,7 @@ export interface TeamWorkSummaryOutput {
     hours: number;
     user: { id: string; name: string; display_name: string };
     work_item: { id: string; identifier: string; title: string } | null;
-    project: { id: string; identifier: string; name: string } | null;
+    project: { id: string | null; identifier: string | null; name: string } | null;
     description?: string;
   }>;
   by_day_matrix?: {
@@ -89,6 +90,7 @@ export interface TeamWorkSummaryOutput {
     time_sliced: boolean;
     pagination_truncated: boolean;
     details_truncated: boolean;
+    truncation_reasons?: string[];
   };
 }
 
@@ -101,7 +103,7 @@ export type TeamWorkSummaryResult = TeamWorkSummaryOutput | TeamWorkSummaryError
 
 // ============ Tool 实现 ============
 
-export async function teamWorkSummary(input: TeamWorkSummaryInput): Promise<TeamWorkSummaryResult> {
+export async function teamWorkSummary(input: TeamWorkSummaryInput, signal?: AbortSignal): Promise<TeamWorkSummaryResult> {
   logger.info({ input }, 'team_work_summary called');
 
   try {
@@ -134,11 +136,13 @@ export async function teamWorkSummary(input: TeamWorkSummaryInput): Promise<Team
         groupBy: input.group_by as TeamGroupBy,
         topN: input.top_n,
         includeMatrix: input.include_matrix,
+        includeZeroUsers: input.include_zero_users,
+        signal,
       }
     );
 
-    // 4. 检查是否有数据
-    if (result.data_quality.workloads_count === 0) {
+    // 4. 检查是否有数据（include_zero_users 时仍返回全员列表）
+    if (result.data_quality.workloads_count === 0 && !input.include_zero_users) {
       const startDate = new Date(timeRange.start * 1000).toISOString().split('T')[0];
       const endDate = new Date(timeRange.end * 1000).toISOString().split('T')[0];
       return {

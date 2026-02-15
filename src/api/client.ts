@@ -6,6 +6,7 @@ interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
   params?: Record<string, string | number | undefined>;
   body?: unknown;
+  signal?: AbortSignal;
 }
 
 interface RetryConfig {
@@ -118,7 +119,12 @@ export class PingCodeApiClient {
   }
 
   async request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
-    const { method = 'GET', params, body } = options;
+    const { method = 'GET', params, body, signal } = options;
+
+    // Check if already aborted before starting
+    if (signal?.aborted) {
+      throw new DOMException('The operation was aborted', 'AbortError');
+    }
 
     // Build URL with query params
     const url = new URL(endpoint, this.baseUrl);
@@ -137,8 +143,14 @@ export class PingCodeApiClient {
       config.requestTimeout
     );
     try {
-      await this.rateLimiter.acquire(rateLimitController.signal);
+      const rateLimitSignal = signal
+        ? AbortSignal.any([rateLimitController.signal, signal])
+        : rateLimitController.signal;
+      await this.rateLimiter.acquire(rateLimitSignal);
     } catch (error) {
+      if (signal?.aborted) {
+        throw new DOMException('The operation was aborted', 'AbortError');
+      }
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw new Error(`Rate limit wait timed out after ${config.requestTimeout}ms: ${endpoint}`);
       }
@@ -151,9 +163,19 @@ export class PingCodeApiClient {
     let lastError: Error | null = null;
 
     for (let attempt = 0; attempt <= RETRY_CONFIG.maxRetries; attempt++) {
+      // Check external signal before each retry attempt
+      if (signal?.aborted) {
+        throw new DOMException('The operation was aborted', 'AbortError');
+      }
+
       // 每次请求创建独立的 AbortController（超时自动取消）
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), config.requestTimeout);
+
+      // Merge timeout signal with external signal
+      const fetchSignal = signal
+        ? AbortSignal.any([controller.signal, signal])
+        : controller.signal;
 
       try {
         const response = await fetch(url.toString(), {
@@ -163,7 +185,7 @@ export class PingCodeApiClient {
             'Content-Type': 'application/json',
           },
           body: body ? JSON.stringify(body) : undefined,
-          signal: controller.signal,
+          signal: fetchSignal,
         });
 
         clearTimeout(timeoutId);
@@ -239,6 +261,11 @@ export class PingCodeApiClient {
 
         if (error instanceof PingCodeApiError) {
           throw error;
+        }
+
+        // External signal aborted → propagate immediately, don't retry
+        if (signal?.aborted) {
+          throw new DOMException('The operation was aborted', 'AbortError');
         }
 
         // AbortError = 请求超时
