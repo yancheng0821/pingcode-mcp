@@ -11,26 +11,24 @@ description: 运行 PingCode MCP 全量测试，验证所有 AC 和安全/可靠
 
 | 套件 | 命令 | 数量 | 说明 |
 |------|------|------|------|
-| 回归测试 | `node tests/regression.mjs` | 51 | AC1–AC12，需要真实 PingCode API |
-| 单元 + E2E | `npm run test:all` | 136 | vitest，全 mock，无网络依赖 |
+| 回归测试 | `node tests/regression.mjs` | 14 | AC1–AC12，需要真实 PingCode API |
+| 单元 + E2E | `npm run test:unit` | 130 | vitest，全 mock，无网络依赖 |
 | HTTP 安全 | `npm run test:http` | 22 | 鉴权/CORS/Session/超时 |
 
-## 回归测试覆盖 (51 个测试，AC1–AC12)
+## 回归测试覆盖 (14 个测试，AC1–AC12 核心路径)
 
-- **AC1**: 团队时间段查询（8个）- 全员列表、total_hours、Top items、workload_id、identifier/title、0 工时用户、按项目过滤 missing_work_item_count、data_quality 有效值
-- **AC2**: 跨度超3个月自动分片（3个）- time_sliced 标记、数据合并、小于3月不分片
-- **AC3**: 权限与鉴权（4个）- token 必填、Bearer 格式、API 成功、401 错误
-- **AC4**: 可观测性指标（4个）- metrics 结构、请求统计、缓存命中率、分片统计
-- **AC5**: 无数据返回 NO_DATA（2个）- 团队查询、用户查询
-- **AC6**: 交互示例场景（6个）- 真实用户场景模拟（月度汇总、按天汇总、项目过滤、模糊匹配、多项目、人天矩阵）
-- **AC7**: list_workloads PRD 参数（6个）- principal_type=user/project/work_item、report_by_id、参数校验
-- **AC8**: MCP 业务错误 isError 语义（4个）- NO_DATA/USER_NOT_FOUND/unknown tool → isError=true、正常数据 → isError 不为 true
-- **AC9**: Schema 一致性（3个）- group_by=type、filter_project_id 等声明与实现一致
-- **AC10**: 聚合维度正确性（5个）- by_type 汇总、ISO 8601 周格式、跨年边界
-- **AC11**: 输入参数与配置校验（3个）- TOKEN_MODE 警告、分页参数下限
-- **AC12**: 查询性能与缓存（3个）- 少量用户逐用户过滤、缓存命中、缓存 TTL
+- **AC1**: 团队时间段查询（2个）- AC1.1 全员列表、AC1.2 每人含 total_hours
+- **AC2**: 跨度超3个月自动分片（1个）- AC2.1 time_sliced 标记
+- **AC3**: 权限与鉴权（2个）- AC3.1 Bearer token 成功、AC3.2 无效 token 返回 401
+- **AC4**: 可观测性指标（1个）- AC4.1 metrics 结构
+- **AC5**: 无数据返回 NO_DATA（1个）- AC5.1 团队查询
+- **AC6**: 交互示例场景（2个）- AC6.1 团队月度汇总 Top 5、AC6.2 用户按天汇总
+- **AC7**: list_workloads PRD 参数（1个）- AC7.1 principal_type=user
+- **AC8**: MCP 业务错误 isError 语义（2个）- AC8.1 NO_DATA → isError=true、AC8.2 正常数据 → isError 不为 true
+- **AC10**: 聚合维度正确性（1个）- AC10.1 ISO 8601 周格式
+- **AC12**: 查询性能与缓存（1个）- AC12.1 用户列表缓存命中
 
-## 单元 + E2E 测试覆盖 (136 个测试)
+## 单元测试覆盖 (130 个测试，15 个文件)
 
 - **pagination** - 分页终止（maxPages/maxRecords/fetchError/timeout）、truncationReasons、去重
 - **signalPropagation** - AbortSignal 透传、wall-clock 超时
@@ -58,16 +56,16 @@ description: 运行 PingCode MCP 全量测试，验证所有 AC 和安全/可靠
 ### 快速验证（无网络依赖）
 
 ```bash
-npm run build && npm run test:all
+npm run build && npm run test:unit
 ```
 
 ### 完整验证（包含真实 API 回归 + HTTP 安全）
 
 ```bash
 npm run build
-npm run test:all       # 136 unit/E2E tests
+npm run test:unit      # 130 unit tests
 npm run test:http      # 22 HTTP security tests
-node tests/regression.mjs  # 51 regression tests (需要 PINGCODE_TOKEN)
+node tests/regression.mjs  # 14 regression tests (需要 PINGCODE_TOKEN)
 ```
 
 ### 检查结果

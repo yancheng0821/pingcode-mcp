@@ -100,7 +100,7 @@ npm run build
 npm run start
 ```
 
-3. 健康检查：
+3. 健康检查（无需鉴权）：
 
 ```bash
 curl -s http://127.0.0.1:3000/health
@@ -109,22 +109,36 @@ curl -s http://127.0.0.1:3000/metrics
 
 4. MCP 调用示例（HTTP）：
 
+MCP Streamable HTTP 协议要求所有请求携带 `Accept: application/json, text/event-stream`，并通过 initialize 建立 Session。
+
 ```bash
+# Step 1: 初始化 Session（返回头中包含 Mcp-Session-Id）
+curl -sv http://127.0.0.1:3000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Authorization: Bearer your-api-key" \
+  -d '{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"capabilities":{},"clientInfo":{"name":"test","version":"1.0"},"protocolVersion":"2025-03-26"}}'
+
+# Step 2: 使用返回的 Session ID 调用工具
 curl -s http://127.0.0.1:3000/mcp \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
   -H "Authorization: Bearer your-api-key" \
-  -d '{
-    "jsonrpc":"2.0",
-    "id":"1",
-    "method":"tools/list",
-    "params":{}
-  }'
+  -H "Mcp-Session-Id: <上一步返回的session-id>" \
+  -d '{"jsonrpc":"2.0","id":"2","method":"tools/list","params":{}}'
+
+# Step 3: 终止 Session（可选）
+curl -s -X DELETE http://127.0.0.1:3000/mcp \
+  -H "Authorization: Bearer your-api-key" \
+  -H "Mcp-Session-Id: <session-id>"
 ```
 
 > 说明：
 > - HTTP 模式必须配置 `MCP_API_KEY` 或 `MCP_API_KEYS`。
-> - 若请求带 `Origin`，必须命中 `ALLOWED_ORIGINS` 白名单。
-> - `TOKEN_MODE=user` 下，HTTP 会话初始化请求需携带 `X-User-Id`。
+> - 所有 `/mcp` 请求必须携带 `Accept: application/json, text/event-stream`，否则返回 406。
+> - 若请求带 `Origin` 头，必须命中 `ALLOWED_ORIGINS` 白名单（未配置时 default-deny）。
+> - Session 空闲超过 30 分钟自动清理，最大并发 100 个 Session。
+> - `TOKEN_MODE=user` 下，初始化请求需额外携带 `X-User-Id` 头。
 
 ---
 
@@ -191,7 +205,7 @@ curl -s http://127.0.0.1:3000/mcp \
 ```bash
 npm run dev          # 开发模式
 npm run test:unit    # 单元测试（Vitest，离线可跑）
-npm test             # 回归测试（51 个用例）
+npm test             # 回归测试（14 个用例）
 npm run test:quiet   # 回归测试（过滤结构化日志）
 npm run test:http    # HTTP 安全测试（22 个用例）
 npm run typecheck    # 类型检查
