@@ -87,6 +87,10 @@ export class PingCodeApiClient {
     let lastError: Error | null = null;
 
     for (let attempt = 0; attempt <= RETRY_CONFIG.maxRetries; attempt++) {
+      // 每次请求创建独立的 AbortController（超时自动取消）
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), config.requestTimeout);
+
       try {
         const response = await fetch(url.toString(), {
           method,
@@ -95,18 +99,29 @@ export class PingCodeApiClient {
             'Content-Type': 'application/json',
           },
           body: body ? JSON.stringify(body) : undefined,
+          signal: controller.signal,
         });
 
+        clearTimeout(timeoutId);
         const duration = Date.now() - startTime;
 
         if (!response.ok) {
           const shouldRetry = RETRY_CONFIG.retryableStatus.includes(response.status);
 
           if (shouldRetry && attempt < RETRY_CONFIG.maxRetries) {
-            const delay = Math.min(
-              RETRY_CONFIG.baseDelay * Math.pow(2, attempt),
-              RETRY_CONFIG.maxDelay
-            );
+            // 429 优先使用 Retry-After 头指定的等待时间
+            let delay: number;
+            if (response.status === 429) {
+              const retryAfter = response.headers.get('retry-after');
+              delay = retryAfter
+                ? Math.min(parseInt(retryAfter, 10) * 1000, RETRY_CONFIG.maxDelay)
+                : Math.min(RETRY_CONFIG.baseDelay * Math.pow(2, attempt), RETRY_CONFIG.maxDelay);
+            } else {
+              delay = Math.min(
+                RETRY_CONFIG.baseDelay * Math.pow(2, attempt),
+                RETRY_CONFIG.maxDelay
+              );
+            }
             logger.warn({
               endpoint,
               status: response.status,
@@ -148,9 +163,33 @@ export class PingCodeApiClient {
 
         return data;
       } catch (error) {
+        clearTimeout(timeoutId);
+
         if (error instanceof PingCodeApiError) {
           throw error;
         }
+
+        // AbortError = 请求超时
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          const duration = Date.now() - startTime;
+          lastError = new Error(
+            `Request to ${endpoint} timed out after ${config.requestTimeout}ms`
+          );
+
+          if (attempt < RETRY_CONFIG.maxRetries) {
+            logger.warn({
+              endpoint,
+              timeout: config.requestTimeout,
+              attempt,
+            }, 'Request timed out, retrying');
+            await this.sleep(RETRY_CONFIG.baseDelay * Math.pow(2, attempt));
+            continue;
+          }
+
+          metrics.recordError(`api:${endpoint}`, duration);
+          throw lastError;
+        }
+
         lastError = error as Error;
 
         if (attempt < RETRY_CONFIG.maxRetries) {

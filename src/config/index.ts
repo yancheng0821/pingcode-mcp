@@ -27,7 +27,14 @@ const ConfigSchema = z.object({
     apiKey: z.string().default(''),
     // 信任的代理头（nginx 反向代理场景）
     trustProxy: z.boolean().default(false),
+    // 允许的 Origin 列表（逗号分隔，防 DNS rebinding）
+    allowedOrigins: z.string().default(''),
+    // HTTP 绑定地址（默认仅本地，显式设置 0.0.0.0 暴露到网络）
+    httpHost: z.string().default('127.0.0.1'),
   }),
+
+  // API 请求超时（毫秒）
+  requestTimeout: z.number().default(15000),
 
   // Rate Limit
   rateLimit: z.object({
@@ -70,7 +77,10 @@ function loadConfig(): Config {
     auth: {
       apiKey: process.env.MCP_API_KEY,
       trustProxy: process.env.TRUST_PROXY === 'true',
+      allowedOrigins: process.env.ALLOWED_ORIGINS,
+      httpHost: process.env.HTTP_HOST,
     },
+    requestTimeout: process.env.REQUEST_TIMEOUT ? parseInt(process.env.REQUEST_TIMEOUT, 10) : undefined,
     rateLimit: {
       maxRequestsPerMin: process.env.RATE_LIMIT_PER_MIN ? parseInt(process.env.RATE_LIMIT_PER_MIN, 10) : undefined,
     },

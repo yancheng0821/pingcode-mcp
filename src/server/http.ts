@@ -6,6 +6,44 @@ import { logger } from '../utils/logger.js';
 import { metrics } from '../utils/metrics.js';
 import { randomUUID } from 'node:crypto';
 
+// 解析允许的 Origin 列表（启动时计算一次）
+const allowedOrigins = new Set(
+  config.auth.allowedOrigins
+    ? config.auth.allowedOrigins.split(',').map(s => s.trim()).filter(Boolean)
+    : []
+);
+
+/**
+ * 验证 Origin（防 DNS rebinding 攻击）
+ * - 无 Origin 头（非浏览器请求）：放行
+ * - 配置了 allowlist 且 Origin 不在列表中：拒绝
+ * - 未配置 allowlist：放行（向后兼容）
+ */
+function isOriginAllowed(origin: string | undefined): boolean {
+  if (!origin) return true;
+  if (allowedOrigins.size === 0) return true;
+  return allowedOrigins.has(origin);
+}
+
+/**
+ * 设置 CORS 响应头
+ */
+function setCorsHeaders(res: ServerResponse, origin: string | undefined): void {
+  // 根据 allowlist 决定 Access-Control-Allow-Origin
+  if (origin && allowedOrigins.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else if (allowedOrigins.size === 0) {
+    // 未配置 allowlist 时保持开放（向后兼容，建议生产环境配置）
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  // 配置了 allowlist 但 origin 不匹配时不设置 Allow-Origin（浏览器会拦截）
+
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers',
+    'Content-Type, Authorization, Mcp-Session-Id, X-API-Key, MCP-Protocol-Version');
+  res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+}
+
 /**
  * 验证 API Key
  * 支持 Authorization: Bearer <key> 或 X-API-Key: <key>
@@ -63,12 +101,18 @@ export async function startHttpServer(mcpServer: Server): Promise<void> {
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = url.pathname;
+    const origin = req.headers['origin'] as string | undefined;
+
+    // Origin 校验（防 DNS rebinding）
+    if (!isOriginAllowed(origin)) {
+      logger.warn({ origin, path }, 'Blocked request with invalid Origin');
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Forbidden', message: 'Invalid Origin' }));
+      return;
+    }
 
     // CORS 头
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
-    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+    setCorsHeaders(res, origin);
 
     // 处理 OPTIONS 预检请求
     if (req.method === 'OPTIONS') {
@@ -100,8 +144,35 @@ export async function startHttpServer(mcpServer: Server): Promise<void> {
       return;
     }
 
-    // MCP 端点
+    // MCP 端点 - DELETE（终止 session）
+    if (path === '/mcp' && req.method === 'DELETE') {
+      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+      if (sessionId && transports.has(sessionId)) {
+        const transport = transports.get(sessionId)!;
+        transport.close();
+        transports.delete(sessionId);
+        logger.info({ sessionId }, 'Session terminated by client');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok' }));
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Session not found' }));
+      }
+      return;
+    }
+
+    // MCP 端点 - POST/GET
     if (path === '/mcp') {
+      // 解析请求体
+      let body: unknown;
+      try {
+        body = await parseRequestBody(req);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Bad Request', message: 'Invalid JSON' }));
+        return;
+      }
+
       try {
         // 获取或创建 session
         const sessionId = req.headers['mcp-session-id'] as string | undefined;
@@ -136,9 +207,6 @@ export async function startHttpServer(mcpServer: Server): Promise<void> {
           logger.info({ sessionId: transport.sessionId }, 'New MCP session created');
         }
 
-        // 解析请求体
-        const body = await parseRequestBody(req);
-
         // 处理请求
         await transport.handleRequest(req, res, body);
       } catch (error) {
@@ -156,11 +224,11 @@ export async function startHttpServer(mcpServer: Server): Promise<void> {
     res.end(JSON.stringify({ error: 'Not found' }));
   });
 
-  // 启动服务器
+  // 启动服务器（默认 127.0.0.1，可通过 HTTP_HOST 配置暴露）
   const port = config.server.httpPort;
-  httpServer.listen(port, '0.0.0.0', () => {
-    logger.info({ port }, 'MCP HTTP Server running');
-    console.log(`MCP Server listening on http://0.0.0.0:${port}/mcp`);
+  const host = config.auth.httpHost || '127.0.0.1';
+  httpServer.listen(port, host, () => {
+    logger.info({ port, host }, 'MCP HTTP Server running');
   });
 
   // 优雅关闭
@@ -209,7 +277,7 @@ async function parseRequestBody(req: IncomingMessage): Promise<unknown> {
         const body = Buffer.concat(chunks).toString('utf-8');
         resolve(JSON.parse(body));
       } catch {
-        resolve(undefined);
+        reject(new SyntaxError('Invalid JSON in request body'));
       }
     });
 

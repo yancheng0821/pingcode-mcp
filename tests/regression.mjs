@@ -12,6 +12,7 @@
  * - AC5: 无数据返回 NO_DATA
  * - AC6: 交互示例场景
  * - AC7: list_workloads PRD 参数 (principal_type=user/project/work_item, report_by_id)
+ * - AC8: MCP 业务错误 isError 语义 (P0-1)
  */
 
 import { fileURLToPath } from 'url';
@@ -21,6 +22,21 @@ import fs from 'fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const projectRoot = join(__dirname, '..');
+
+// 构建产物前置检查 — 测试依赖 dist/ 下的编译输出
+const criticalModules = [
+  'dist/server/mcp.js',
+  'dist/tools/teamWorkSummary.js',
+  'dist/tools/userWorkSummary.js',
+  'dist/tools/listWorkloads.js',
+];
+const missing = criticalModules.filter(m => !fs.existsSync(join(projectRoot, m)));
+if (missing.length > 0) {
+  console.error('❌ 缺少构建产物，请先执行 npm run build\n');
+  console.error('   缺失文件:');
+  for (const m of missing) console.error(`     - ${m}`);
+  process.exit(1);
+}
 
 // 测试结果收集
 const results = {
@@ -600,6 +616,122 @@ const ac7Tests = [
   }),
 ];
 
+// ============ AC8: MCP 业务错误 isError 语义 (P0-1) ============
+
+/**
+ * 使用真实的 createMcpServer()（从 dist/server/mcp.js 导入）+ InMemoryTransport
+ * 端到端验证 CallTool handler 中 isError 标记逻辑。
+ *
+ * 不复刻任何 handler 代码，确保测试的是生产实现。
+ */
+async function createMcpClientServer() {
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
+  const { createMcpServer } = await import('../dist/server/mcp.js');
+
+  const server = createMcpServer();
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  return { client, server, clientTransport, serverTransport };
+}
+
+const ac8Tests = [
+  test('AC8.1 - NO_DATA 业务错误经 MCP 返回 isError=true', async () => {
+    const { client, clientTransport, serverTransport } = await createMcpClientServer();
+    try {
+      const result = await client.callTool({
+        name: 'team_work_summary',
+        arguments: {
+          time_range: { start: '2030-01-01', end: '2030-01-31' },
+          group_by: 'user',
+          top_n: 5,
+        },
+      });
+
+      assert(result.isError === true, `NO_DATA 应标记 isError=true，实际: ${result.isError}`);
+
+      const body = JSON.parse(result.content[0].text);
+      assert(body.code === 'NO_DATA', `错误码应为 NO_DATA，实际: ${body.code}`);
+    } finally {
+      await clientTransport.close();
+      await serverTransport.close();
+    }
+  }),
+
+  test('AC8.2 - USER_NOT_FOUND 业务错误经 MCP 返回 isError=true', async () => {
+    const { client, clientTransport, serverTransport } = await createMcpClientServer();
+    try {
+      const result = await client.callTool({
+        name: 'user_work_summary',
+        arguments: {
+          user: { name: '不存在的用户XYZ999' },
+          time_range: { start: '2026-01-01', end: '2026-01-31' },
+          group_by: 'work_item',
+          top_n: 5,
+        },
+      });
+
+      assert(result.isError === true, `USER_NOT_FOUND 应标记 isError=true，实际: ${result.isError}`);
+
+      const body = JSON.parse(result.content[0].text);
+      assert(
+        body.code === 'USER_NOT_FOUND' || body.code === 'NO_DATA',
+        `错误码应为 USER_NOT_FOUND 或 NO_DATA，实际: ${body.code}`,
+      );
+    } finally {
+      await clientTransport.close();
+      await serverTransport.close();
+    }
+  }),
+
+  test('AC8.3 - 正常数据经 MCP 返回 isError 不为 true', async () => {
+    const { client, clientTransport, serverTransport } = await createMcpClientServer();
+    try {
+      const result = await client.callTool({
+        name: 'team_work_summary',
+        arguments: {
+          time_range: { start: '2026-01-01', end: '2026-01-31' },
+          group_by: 'user',
+          top_n: 5,
+        },
+      });
+
+      assert(
+        result.isError !== true,
+        `正常数据不应标记 isError=true`,
+      );
+
+      const body = JSON.parse(result.content[0].text);
+      assert(!body.code, `正常数据不应有 code 字段，实际: ${body.code}`);
+      assert(!body.error, `正常数据不应有 error 字段`);
+    } finally {
+      await clientTransport.close();
+      await serverTransport.close();
+    }
+  }),
+
+  test('AC8.4 - unknown tool 经 MCP 返回 isError=true', async () => {
+    const { client, clientTransport, serverTransport } = await createMcpClientServer();
+    try {
+      const result = await client.callTool({
+        name: 'nonexistent_tool_xyz',
+        arguments: {},
+      });
+
+      assert(result.isError === true, `unknown tool 应标记 isError=true，实际: ${result.isError}`);
+
+      const body = JSON.parse(result.content[0].text);
+      assert(body.error.includes('Unknown tool'), `应提示 Unknown tool，实际: ${body.error}`);
+    } finally {
+      await clientTransport.close();
+      await serverTransport.close();
+    }
+  }),
+];
+
 // ============ 运行测试 ============
 async function runAllTests() {
   console.log('╔════════════════════════════════════════════════════════════╗');
@@ -614,6 +746,7 @@ async function runAllTests() {
     { name: 'AC5: 无数据返回 NO_DATA', tests: ac5Tests },
     { name: 'AC6: 交互示例场景', tests: ac6Tests },
     { name: 'AC7: list_workloads PRD 参数', tests: ac7Tests },
+    { name: 'AC8: MCP 业务错误 isError 语义', tests: ac8Tests },
   ];
 
   for (const group of testGroups) {
