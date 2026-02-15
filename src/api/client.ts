@@ -26,7 +26,7 @@ const RETRY_CONFIG: RetryConfig = {
  * 解析 Retry-After 头（支持秒数和 HTTP-date 两种格式）
  * 返回等待毫秒数，无法解析时返回 null
  */
-function parseRetryAfter(value: string): number | null {
+export function parseRetryAfter(value: string): number | null {
   // 尝试解析为秒数（纯数字字符串）
   const seconds = Number(value);
   if (!Number.isNaN(seconds) && seconds > 0) {
@@ -41,8 +41,23 @@ function parseRetryAfter(value: string): number | null {
   return null;
 }
 
+/**
+ * Compute retry delay with full jitter.
+ * Returns a value in [base * 2^attempt * 0.5, base * 2^attempt * 1.0],
+ * capped at maxDelay.
+ */
+export function computeDelay(
+  attempt: number,
+  baseDelay: number = RETRY_CONFIG.baseDelay,
+  maxDelay: number = RETRY_CONFIG.maxDelay,
+): number {
+  const exponential = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
+  // Full jitter: 50-100% of exponential value
+  return exponential * (0.5 + Math.random() * 0.5);
+}
+
 // Simple rate limiter
-class RateLimiter {
+export class RateLimiter {
   private timestamps: number[] = [];
   private readonly maxRequests: number;
   private readonly windowMs: number;
@@ -158,20 +173,22 @@ export class PingCodeApiClient {
           const shouldRetry = RETRY_CONFIG.retryableStatus.includes(response.status);
 
           if (shouldRetry && attempt < RETRY_CONFIG.maxRetries) {
-            // 429 优先使用 Retry-After 头指定的等待时间
+            // 429 优先使用 Retry-After 头指定的等待时间（不加 jitter）
             let delay: number;
             if (response.status === 429) {
               const retryAfter = response.headers.get('retry-after');
               const parsedRetryMs = retryAfter ? parseRetryAfter(retryAfter) : null;
-              delay = parsedRetryMs !== null
-                ? Math.min(parsedRetryMs, RETRY_CONFIG.maxDelay)
-                : Math.min(RETRY_CONFIG.baseDelay * Math.pow(2, attempt), RETRY_CONFIG.maxDelay);
+              if (parsedRetryMs !== null) {
+                // Server-specified delay: use as-is (no jitter)
+                delay = Math.min(parsedRetryMs, RETRY_CONFIG.maxDelay);
+              } else {
+                // 429 without Retry-After: use jittered backoff
+                delay = computeDelay(attempt);
+              }
             } else {
-              delay = Math.min(
-                RETRY_CONFIG.baseDelay * Math.pow(2, attempt),
-                RETRY_CONFIG.maxDelay
-              );
+              delay = computeDelay(attempt);
             }
+            metrics.recordRetry();
             logger.warn({
               endpoint,
               status: response.status,
@@ -180,6 +197,11 @@ export class PingCodeApiClient {
             }, 'Request failed, retrying');
             await this.sleep(delay);
             continue;
+          }
+
+          // 429 retries exhausted
+          if (response.status === 429) {
+            metrics.recordRateLimitExhausted();
           }
 
           const errorBody = await response.text();
@@ -227,12 +249,13 @@ export class PingCodeApiClient {
           );
 
           if (attempt < RETRY_CONFIG.maxRetries) {
+            metrics.recordRetry();
             logger.warn({
               endpoint,
               timeout: config.requestTimeout,
               attempt,
             }, 'Request timed out, retrying');
-            await this.sleep(RETRY_CONFIG.baseDelay * Math.pow(2, attempt));
+            await this.sleep(computeDelay(attempt));
             continue;
           }
 
@@ -243,10 +266,8 @@ export class PingCodeApiClient {
         lastError = error as Error;
 
         if (attempt < RETRY_CONFIG.maxRetries) {
-          const delay = Math.min(
-            RETRY_CONFIG.baseDelay * Math.pow(2, attempt),
-            RETRY_CONFIG.maxDelay
-          );
+          const delay = computeDelay(attempt);
+          metrics.recordRetry();
           logger.warn({
             endpoint,
             error: lastError.message,

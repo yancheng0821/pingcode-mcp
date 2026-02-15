@@ -3,6 +3,7 @@ import { userService } from '../services/userService.js';
 import { workloadService, type UserWorkResult, type GroupBy } from '../services/workloadService.js';
 import { parseTimeRange } from '../utils/timeUtils.js';
 import { logger } from '../utils/logger.js';
+import { createToolDefinition } from './schemaUtils.js';
 
 // ============ Schema 定义 ============
 
@@ -226,7 +227,8 @@ function formatOutput(result: UserWorkResult): UserWorkSummaryOutput {
 
 export const userWorkSummaryToolDefinition = {
   name: 'user_work_summary',
-  description: `查询单个用户在指定时间段内做了什么、工时多少。
+  ...createToolDefinition(
+    `查询单个用户在指定时间段内做了什么、工时多少。
 
 支持：
 - 按用户 ID 或姓名查询
@@ -238,36 +240,6 @@ export const userWorkSummaryToolDefinition = {
 - summary: 汇总信息（总工时、按项目/工作项分布）
 - details: 工时明细列表
 - data_quality: 数据质量指标`,
-  inputSchema: {
-    type: 'object',
-    properties: {
-      user: {
-        type: 'object',
-        description: '用户标识（id 或 name 二选一）',
-        properties: {
-          id: { type: 'string', description: '用户 ID' },
-          name: { type: 'string', description: '用户姓名（支持模糊匹配）' },
-        },
-      },
-      time_range: {
-        type: 'object',
-        description: '时间范围',
-        properties: {
-          start: { type: 'string', description: '开始时间，如 "2026-01-01" 或 "last_week"' },
-          end: { type: 'string', description: '结束时间，如 "2026-01-31" 或 "today"' },
-        },
-        required: ['start', 'end'],
-      },
-      group_by: {
-        type: 'string',
-        enum: ['day', 'week', 'month', 'work_item', 'project', 'type'],
-        description: '聚合维度，默认 "work_item"',
-      },
-      top_n: {
-        type: 'number',
-        description: '返回 Top N 工作项/项目，默认 10',
-      },
-    },
-    required: ['user', 'time_range'],
-  },
+    UserWorkSummaryInputSchema,
+  ),
 };

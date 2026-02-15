@@ -121,9 +121,12 @@ export async function startHttpServer(serverFactory: () => Server): Promise<void
   cleanupTimer.unref(); // 不阻止进程退出
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    const httpRequestId = randomUUID();
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = url.pathname;
     const origin = req.headers['origin'] as string | undefined;
+
+    logger.debug({ requestId: httpRequestId, method: req.method, path }, 'HTTP request received');
 
     // Origin 校验（防 DNS rebinding）
     if (!isOriginAllowed(origin)) {

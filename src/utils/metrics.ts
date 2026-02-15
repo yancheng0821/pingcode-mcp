@@ -24,6 +24,11 @@ interface SliceMetric {
   slicedRequests: number;
 }
 
+interface RetryMetric {
+  totalRetries: number;
+  rateLimitExhausted: number;
+}
+
 class Metrics {
   // 按工具/端点统计请求
   private requests = new Map<string, RequestMetric>();
@@ -33,6 +38,9 @@ class Metrics {
 
   // 分片统计
   private slices: SliceMetric = { totalSlices: 0, slicedRequests: 0 };
+
+  // 重试统计
+  private retries: RetryMetric = { totalRetries: 0, rateLimitExhausted: 0 };
 
   // 启动时间
   private readonly startTime = Date.now();
@@ -109,6 +117,20 @@ class Metrics {
   }
 
   /**
+   * 记录一次重试
+   */
+  recordRetry(): void {
+    this.retries.totalRetries++;
+  }
+
+  /**
+   * 记录 429 重试耗尽
+   */
+  recordRateLimitExhausted(): void {
+    this.retries.rateLimitExhausted++;
+  }
+
+  /**
    * 获取所有指标快照
    */
   getSnapshot(): MetricsSnapshot {
@@ -150,6 +172,10 @@ class Metrics {
           ? this.slices.totalSlices / this.slices.slicedRequests
           : 0,
       },
+      retries: {
+        total_retries: this.retries.totalRetries,
+        rate_limit_exhausted: this.retries.rateLimitExhausted,
+      },
     };
   }
 
@@ -160,6 +186,7 @@ class Metrics {
     this.requests.clear();
     this.cache = { hits: 0, misses: 0 };
     this.slices = { totalSlices: 0, slicedRequests: 0 };
+    this.retries = { totalRetries: 0, rateLimitExhausted: 0 };
     logger.info('Metrics reset');
   }
 
@@ -199,6 +226,10 @@ export interface MetricsSnapshot {
     sliced_requests: number;
     total_slices: number;
     avg_slices_per_request: number;
+  };
+  retries: {
+    total_retries: number;
+    rate_limit_exhausted: number;
   };
 }
 

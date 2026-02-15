@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { workloadService, type TeamWorkResult, type TeamGroupBy } from '../services/workloadService.js';
 import { parseTimeRange } from '../utils/timeUtils.js';
 import { logger } from '../utils/logger.js';
+import { createToolDefinition } from './schemaUtils.js';
 
 // ============ Schema 定义 ============
 
@@ -337,7 +338,8 @@ function formatOutput(result: TeamWorkResult): TeamWorkSummaryOutput {
 
 export const teamWorkSummaryToolDefinition = {
   name: 'team_work_summary',
-  description: `查询团队在指定时间段内每个人做了什么、工时分布。
+  ...createToolDefinition(
+    `查询团队在指定时间段内每个人做了什么、工时分布。
 
 支持：
 - 查询全员或指定用户列表
@@ -349,41 +351,6 @@ export const teamWorkSummaryToolDefinition = {
 - summary: 团队汇总（总工时、成员列表及各自 Top 项目/工作项）
 - by_day_matrix: 可选的人天矩阵
 - data_quality: 数据质量指标`,
-  inputSchema: {
-    type: 'object',
-    properties: {
-      time_range: {
-        type: 'object',
-        description: '时间范围',
-        properties: {
-          start: { type: 'string', description: '开始时间，如 "2026-01-01" 或 "last_month"' },
-          end: { type: 'string', description: '结束时间，如 "2026-01-31" 或 "today"' },
-        },
-        required: ['start', 'end'],
-      },
-      user_ids: {
-        type: 'array',
-        items: { type: 'string' },
-        description: '用户 ID 列表（不传则查全员）',
-      },
-      project_id: {
-        type: 'string',
-        description: '项目 ID（可选，只看某项目投入）',
-      },
-      group_by: {
-        type: 'string',
-        enum: ['user', 'project', 'work_item', 'day', 'week', 'month', 'type'],
-        description: '聚合维度，默认 "user"',
-      },
-      top_n: {
-        type: 'number',
-        description: '每人返回 Top N 工作项/项目，默认 5',
-      },
-      include_matrix: {
-        type: 'boolean',
-        description: '是否返回人天矩阵，默认 false',
-      },
-    },
-    required: ['time_range'],
-  },
+    TeamWorkSummaryInputSchema,
+  ),
 };

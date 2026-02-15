@@ -5,6 +5,7 @@ import { workItemService } from '../services/index.js';
 import { parseTimeRange } from '../utils/timeUtils.js';
 import { formatTimestamp } from '../utils/timeUtils.js';
 import { logger } from '../utils/logger.js';
+import { createToolDefinition } from './schemaUtils.js';
 
 // ============ 常量 ============
 
@@ -291,7 +292,8 @@ export async function listWorkloads(input: ListWorkloadsInput): Promise<ListWork
 
 export const listWorkloadsToolDefinition = {
     name: 'list_workloads',
-    description: `获取工时记录列表。
+    ...createToolDefinition(
+        `获取工时记录列表。
 
 支持多种过滤方式（按 PRD 定义）：
 - 按用户查询：principal_type=user + principal_id=用户ID
@@ -305,52 +307,6 @@ export const listWorkloadsToolDefinition = {
 - total: 匹配的总数
 - returned: 本次返回数量
 - data_quality: 数据质量指标`,
-    inputSchema: {
-        type: 'object',
-        properties: {
-            principal_type: {
-                type: 'string',
-                enum: ['user', 'project', 'work_item'],
-                description: '主体类型：user（按用户）、project（按项目）、work_item（按工作项）',
-            },
-            principal_id: {
-                type: 'string',
-                description: '主体 ID（用户ID/项目ID/工作项ID，与 principal_type 配合使用）',
-            },
-            report_by_id: {
-                type: 'string',
-                description: '填报人 ID（兼容参数，等同于 principal_type=user）',
-            },
-            user: {
-                type: 'object',
-                description: '按用户过滤（兼容参数，支持模糊匹配）',
-                properties: {
-                    id: { type: 'string', description: '用户 ID' },
-                    name: { type: 'string', description: '用户名或显示名' },
-                },
-            },
-            time_range: {
-                type: 'object',
-                description: '时间范围',
-                properties: {
-                    start: { type: 'string', description: '开始时间，如 "2026-01-01" 或 "上周"' },
-                    end: { type: 'string', description: '结束时间，如 "2026-01-31" 或 "今天"' },
-                },
-                required: ['start', 'end'],
-            },
-            filter_project_id: {
-                type: 'string',
-                description: '按项目 ID 过滤（本地过滤，可与其他过滤条件组合）',
-            },
-            filter_work_item_id: {
-                type: 'string',
-                description: '按工作项 ID 过滤（本地过滤，可与其他过滤条件组合）',
-            },
-            limit: {
-                type: 'number',
-                description: '返回数量限制，默认 100，最大 500',
-            },
-        },
-        required: ['time_range'],
-    },
+        ListWorkloadsInputSchema,
+    ),
 };

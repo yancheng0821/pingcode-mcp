@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { workItemService } from '../services/workItemService.js';
 import { logger } from '../utils/logger.js';
+import { createToolDefinition } from './schemaUtils.js';
 
 // ============ Schema 定义 ============
 
@@ -88,21 +89,14 @@ export async function getWorkItem(input: GetWorkItemInput): Promise<GetWorkItemR
 
 export const getWorkItemToolDefinition = {
   name: 'get_work_item',
-  description: `获取单个工作项的详情。
+  ...createToolDefinition(
+    `获取单个工作项的详情。
 
 参数：
 - id: 工作项 ID
 
 返回：
 - work_item: 工作项详情（含项目信息）`,
-  inputSchema: {
-    type: 'object',
-    properties: {
-      id: {
-        type: 'string',
-        description: '工作项 ID',
-      },
-    },
-    required: ['id'],
-  },
+    GetWorkItemInputSchema,
+  ),
 };

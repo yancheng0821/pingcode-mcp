@@ -98,7 +98,8 @@ metrics.getSnapshot() → {
   uptime_seconds,
   requests: { total, errors, error_rate, by_endpoint },
   cache: { hits, misses, hit_rate },
-  time_slicing: { sliced_requests, total_slices }
+  time_slicing: { sliced_requests, total_slices },
+  retries: { total_retries, rate_limit_exhausted }
 }
 ```
 
@@ -136,6 +137,12 @@ TRANSPORT_MODE=http npm start
 ## 需求文档
 
 详见 `Pingcode-MCP需求PRD.md`
+
+## 工具命名约定
+
+- 现有工具使用扁平名称（`list_users`、`user_work_summary` 等），保持不变以避免破坏性变更
+- 未来新增工具使用 `pingcode_` 前缀（如 `pingcode_list_sprints`）
+- 理由：当前服务器通常独立运行，扁平名称不会冲突；加前缀的收益不抵重命名迁移成本
 
 ## 注意事项
 

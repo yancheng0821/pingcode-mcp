@@ -3,6 +3,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { randomUUID } from 'node:crypto';
 import { logger } from '../utils/logger.js';
 import { metrics } from '../utils/metrics.js';
 import {
@@ -62,35 +63,40 @@ export function createMcpServer(): Server {
   // Register call tool handler
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    const requestId = randomUUID();
     const startTime = Date.now();
 
-    logger.info({ tool: name }, 'Tool called');
+    logger.info({ tool: name, requestId }, 'Tool called');
 
     try {
       // 先检查是否是内置工具
       const builtinResult = await handleBuiltinTool(name);
       if (builtinResult) {
         metrics.recordSuccess(`tool:${name}`, Date.now() - startTime);
+        const payload = builtinResult.result as Record<string, unknown>;
         return {
           content: [
             {
-              type: 'text',
-              text: JSON.stringify(builtinResult.result, null, 2),
+              type: 'text' as const,
+              text: JSON.stringify(payload, null, 2),
             },
           ],
+          structuredContent: payload,
         };
       }
 
       // 检查是否是版本化工具
       if (!toolRegistry.hasTools(name)) {
         metrics.recordError(`tool:${name}`, Date.now() - startTime);
+        const errorPayload = { error: `Unknown tool: ${name}` };
         return {
           content: [
             {
-              type: 'text',
-              text: JSON.stringify({ error: `Unknown tool: ${name}` }),
+              type: 'text' as const,
+              text: JSON.stringify(errorPayload),
             },
           ],
+          structuredContent: errorPayload,
           isError: true,
         };
       }
@@ -117,29 +123,41 @@ export function createMcpServer(): Server {
       // 业务错误（NO_DATA / USER_NOT_FOUND 等）标记 isError，让 LLM 可自我纠错
       if (isBusinessError(result)) {
         return {
-          content: [{ type: 'text', text }],
+          content: [{
+            type: 'text' as const,
+            text,
+            annotations: { audience: ['assistant' as const] },
+          }],
+          structuredContent: payload as Record<string, unknown>,
           isError: true,
         };
       }
 
       return {
-        content: [{ type: 'text', text }],
+        content: [{
+          type: 'text' as const,
+          text,
+          annotations: { audience: ['assistant' as const] },
+        }],
+        structuredContent: payload as Record<string, unknown>,
       };
     } catch (error) {
       // 记录失败指标
       metrics.recordError(`tool:${name}`, Date.now() - startTime);
 
-      logger.error({ error, tool: name }, 'Tool execution failed');
+      logger.error({ error, tool: name, requestId }, 'Tool execution failed');
+      const errorPayload = {
+        error: 'Tool execution failed',
+        message: (error as Error).message,
+      };
       return {
         content: [
           {
-            type: 'text',
-            text: JSON.stringify({
-              error: 'Tool execution failed',
-              message: (error as Error).message,
-            }),
+            type: 'text' as const,
+            text: JSON.stringify(errorPayload),
           },
         ],
+        structuredContent: errorPayload,
         isError: true,
       };
     }

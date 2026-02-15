@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { userService } from '../services/userService.js';
 import { logger } from '../utils/logger.js';
+import { createToolDefinition } from './schemaUtils.js';
 
 // ============ 常量 ============
 
@@ -106,7 +107,8 @@ export async function listUsers(input: ListUsersInput): Promise<ListUsersResult>
 
 export const listUsersToolDefinition = {
   name: 'list_users',
-  description: `获取企业成员列表。
+  ...createToolDefinition(
+    `获取企业成员列表。
 
 支持：
 - 按关键词搜索（姓名、用户名、邮箱）
@@ -117,25 +119,6 @@ export const listUsersToolDefinition = {
 - total: 匹配的总数
 - page_index/page_size: 分页信息
 - has_more: 是否有更多数据`,
-  inputSchema: {
-    type: 'object',
-    properties: {
-      keyword: {
-        type: 'string',
-        description: '搜索关键词（可选）',
-      },
-      page_size: {
-        type: 'number',
-        description: '每页数量，默认 100，最大 500',
-      },
-      page_index: {
-        type: 'number',
-        description: '页码，从 1 开始，默认 1',
-      },
-      limit: {
-        type: 'number',
-        description: '兼容旧参数，等同于 page_size',
-      },
-    },
-  },
+    ListUsersInputSchema,
+  ),
 };
