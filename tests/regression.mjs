@@ -12,7 +12,11 @@
  * - AC5: 无数据返回 NO_DATA
  * - AC6: 交互示例场景
  * - AC7: list_workloads PRD 参数 (principal_type=user/project/work_item, report_by_id)
- * - AC8: MCP 业务错误 isError 语义 (P0-1)
+ * - AC8: MCP 业务错误 isError 语义
+ * - AC9: Schema 一致性 (Zod vs JSON Schema)
+ * - AC10: 聚合维度正确性 (ISO 周, group_by=type 输出)
+ * - AC11: 输入参数与配置校验 (TOKEN_MODE 容错, 分页参数边界)
+ * - AC12: 查询性能与缓存 (批量工时查询策略, 用户列表缓存)
  */
 
 import { fileURLToPath } from 'url';
@@ -72,6 +76,51 @@ async function runTest(testCase) {
     console.log(`     Error: ${error.message}`);
     return false;
   }
+}
+
+// ============ 动态测试夹具（跨环境兼容） ============
+//
+// 从真实 API 动态获取可用的 userId / projectId，
+// 避免硬编码导致跨环境失败。
+
+let _fixtureCache = null;
+
+async function getFixtures() {
+  if (_fixtureCache) return _fixtureCache;
+
+  const { teamWorkSummary } = await import('../dist/tools/teamWorkSummary.js');
+  const result = await teamWorkSummary({
+    time_range: { start: '2026-01-01', end: '2026-01-31' },
+    group_by: 'user',
+    top_n: 3
+  });
+
+  if (result.error) {
+    throw new Error(`无法初始化测试夹具: ${result.error}`);
+  }
+
+  // 找到一个有工时记录的用户
+  const memberWithHours = result.summary.members.find(m => m.total_hours > 0);
+  if (!memberWithHours) {
+    throw new Error('测试夹具: 找不到有工时记录的用户');
+  }
+
+  // 找到一个有效的项目 ID
+  let projectId = null;
+  for (const m of result.summary.members) {
+    if (m.top_projects?.length > 0) {
+      projectId = m.top_projects[0].project.id;
+      break;
+    }
+  }
+
+  _fixtureCache = {
+    userId: memberWithHours.user.id,
+    userName: memberWithHours.user.name,
+    userDisplayName: memberWithHours.user.display_name,
+    projectId,
+  };
+  return _fixtureCache;
 }
 
 // ============ AC1: 团队时间段查询 ============
@@ -148,7 +197,127 @@ const ac1Tests = [
     assert(detailWithWorkItem.work_item.identifier, 'work_item 缺少 identifier');
     assert(detailWithWorkItem.work_item.title, 'work_item 缺少 title');
   }),
+
+  test('AC1.6 - 全员列表包含 0 工时用户', async () => {
+    // 获取组织全部用户数
+    const { listUsers } = await import('../dist/api/endpoints/users.js');
+    const allOrgUsers = await listUsers();
+
+    const { teamWorkSummary } = await import('../dist/tools/teamWorkSummary.js');
+    const result = await teamWorkSummary({
+      time_range: { start: '2026-01-01', end: '2026-01-31' },
+      group_by: 'user',
+      top_n: 1
+    });
+
+    assert(!result.error, `返回错误: ${result.error}`);
+
+    // user_count 应等于全部可解析用户数（含 0 工时用户）
+    const expectedCount = allOrgUsers.length - (result.data_quality.unknown_user_matches || 0);
+    assert(
+      result.summary.user_count === expectedCount,
+      `user_count (${result.summary.user_count}) 应等于可解析用户数 (${expectedCount})，0 工时用户不应被排除`
+    );
+
+    // members 长度应等于 user_count（所有用户都有对应条目）
+    assert(
+      result.summary.members.length === result.summary.user_count,
+      `members.length (${result.summary.members.length}) 应等于 user_count (${result.summary.user_count})`
+    );
+
+    // 每个 member 的 total_hours 应为有效数值（含 0）
+    for (const member of result.summary.members) {
+      assert(
+        typeof member.total_hours === 'number' && member.total_hours >= 0,
+        `${member.user.display_name} total_hours 应为 >= 0 的数字`
+      );
+    }
+  }),
+
+  test('AC1.7 - 按项目过滤时 missing_work_item_count 不超过全局值', async () => {
+    const fixtures = await getFixtures();
+    if (!fixtures.projectId) {
+      console.log('     跳过：没有可用的项目 ID');
+      return;
+    }
+
+    const { teamWorkSummary } = await import('../dist/tools/teamWorkSummary.js');
+
+    // 无过滤查询
+    const unfiltered = await teamWorkSummary({
+      time_range: { start: '2026-01-01', end: '2026-01-31' },
+      group_by: 'user',
+      top_n: 5
+    });
+    assert(!unfiltered.error, `无过滤查询返回错误: ${unfiltered.error}`);
+
+    // 按项目过滤查询
+    const filtered = await teamWorkSummary({
+      time_range: { start: '2026-01-01', end: '2026-01-31' },
+      project_id: fixtures.projectId,
+      group_by: 'user',
+      top_n: 5
+    });
+
+    // 可能该项目在此时间段无数据
+    if (filtered.error && filtered.code === 'NO_DATA') {
+      console.log('     跳过：该项目在此时间段无数据');
+      return;
+    }
+    assert(!filtered.error, `过滤查询返回错误: ${filtered.error}`);
+
+    // 过滤后 missing_work_item_count 应为有效数字
+    assert(
+      typeof filtered.data_quality.missing_work_item_count === 'number' &&
+      filtered.data_quality.missing_work_item_count >= 0,
+      `过滤后 missing_work_item_count 应为 >= 0 的数字，实际: ${filtered.data_quality.missing_work_item_count}`
+    );
+
+    // 核心断言：过滤后 missing_count <= 未过滤 missing_count
+    assert(
+      filtered.data_quality.missing_work_item_count <= unfiltered.data_quality.missing_work_item_count,
+      `过滤后 missing_count (${filtered.data_quality.missing_work_item_count}) 应 <= 未过滤 (${unfiltered.data_quality.missing_work_item_count})`
+    );
+  }),
+
+  test('AC1.8 - data_quality.missing_work_item_count 为有效值', async () => {
+    const { teamWorkSummary } = await import('../dist/tools/teamWorkSummary.js');
+    const result = await teamWorkSummary({
+      time_range: { start: '2026-01-01', end: '2026-01-31' },
+      group_by: 'user',
+      top_n: 5
+    });
+
+    assert(!result.error, `返回错误: ${result.error}`);
+    assert(
+      typeof result.data_quality.missing_work_item_count === 'number',
+      'missing_work_item_count 应为数字'
+    );
+    assert(
+      result.data_quality.missing_work_item_count >= 0,
+      'missing_work_item_count 应 >= 0'
+    );
+
+    // user_work_summary 也应正确报告（该路径本已正确，交叉验证）
+    const fixtures = await getFixtures();
+    const { userWorkSummary } = await import('../dist/tools/userWorkSummary.js');
+    const userResult = await userWorkSummary({
+      user: { id: fixtures.userId },
+      time_range: { start: '2026-01-01', end: '2026-01-31' },
+      group_by: 'work_item',
+      top_n: 5
+    });
+
+    assert(!userResult.error, `用户查询返回错误: ${userResult.error}`);
+    assert(
+      typeof userResult.data_quality.missing_work_item_count === 'number',
+      'user_work_summary missing_work_item_count 应为数字'
+    );
+  }),
 ];
+
+// 注：AC1.7 验证项目过滤后 missing_work_item_count <= 无过滤值
+// 注：AC1.8 交叉验证 team/user 两条路径的 missing_work_item_count
 
 // ============ AC2: 跨度超3个月自动分片 ============
 const ac2Tests = [
@@ -616,7 +785,7 @@ const ac7Tests = [
   }),
 ];
 
-// ============ AC8: MCP 业务错误 isError 语义 (P0-1) ============
+// ============ AC8: MCP 业务错误 isError 语义 ============
 
 /**
  * 使用真实的 createMcpServer()（从 dist/server/mcp.js 导入）+ InMemoryTransport
@@ -732,6 +901,286 @@ const ac8Tests = [
   }),
 ];
 
+// ============ AC9: Schema 一致性 ============
+
+const ac9Tests = [
+  test('AC9.1 - user_work_summary schema 声明 group_by=type', async () => {
+    const { userWorkSummaryToolDefinition } = await import('../dist/tools/userWorkSummary.js');
+    const groupByEnum = userWorkSummaryToolDefinition.inputSchema.properties.group_by.enum;
+    assert(
+      groupByEnum.includes('type'),
+      `group_by enum 应包含 'type'，实际: ${JSON.stringify(groupByEnum)}`
+    );
+  }),
+
+  test('AC9.2 - team_work_summary schema 声明 group_by=type', async () => {
+    const { teamWorkSummaryToolDefinition } = await import('../dist/tools/teamWorkSummary.js');
+    const groupByEnum = teamWorkSummaryToolDefinition.inputSchema.properties.group_by.enum;
+    assert(
+      groupByEnum.includes('type'),
+      `group_by enum 应包含 'type'，实际: ${JSON.stringify(groupByEnum)}`
+    );
+  }),
+
+  test('AC9.3 - list_workloads schema 声明 filter_project_id', async () => {
+    const { listWorkloadsToolDefinition } = await import('../dist/tools/listWorkloads.js');
+    const props = listWorkloadsToolDefinition.inputSchema.properties;
+    assert(
+      props.filter_project_id,
+      'inputSchema.properties 应包含 filter_project_id'
+    );
+    assert(
+      props.filter_project_id.type === 'string',
+      `filter_project_id.type 应为 'string'，实际: ${props.filter_project_id.type}`
+    );
+  }),
+];
+
+// ============ AC10: 聚合维度正确性 ============
+
+const ac10Tests = [
+  test('AC10.1 - group_by=type 用户汇总返回 by_type', async () => {
+    const fixtures = await getFixtures();
+    const { userWorkSummary } = await import('../dist/tools/userWorkSummary.js');
+    const result = await userWorkSummary({
+      user: { id: fixtures.userId },
+      time_range: { start: '2026-01-01', end: '2026-01-31' },
+      group_by: 'type',
+      top_n: 5
+    });
+
+    assert(!result.error, `返回错误: ${result.error}`);
+    assert(Array.isArray(result.summary.by_type), 'summary.by_type 应为数组');
+
+    // 有数据时校验字段结构
+    if (result.summary.by_type.length > 0) {
+      const entry = result.summary.by_type[0];
+      assert(typeof entry.type === 'string', 'by_type 条目应有 type 字段');
+      assert(typeof entry.hours === 'number', 'by_type 条目应有 hours 字段');
+    }
+  }),
+
+  test('AC10.2 - group_by=type 团队汇总返回 by_type', async () => {
+    const { teamWorkSummary } = await import('../dist/tools/teamWorkSummary.js');
+    const result = await teamWorkSummary({
+      time_range: { start: '2026-01-01', end: '2026-01-31' },
+      group_by: 'type',
+      top_n: 5
+    });
+
+    assert(!result.error, `返回错误: ${result.error}`);
+
+    // 团队汇总级别应有 by_type
+    assert(Array.isArray(result.summary.by_type), 'summary.by_type 应为数组');
+    if (result.summary.by_type.length > 0) {
+      assert(typeof result.summary.by_type[0].type === 'string', 'summary by_type 条目应有 type');
+      assert(typeof result.summary.by_type[0].hours === 'number', 'summary by_type 条目应有 hours');
+    }
+
+    // 成员级别应有 by_type（含 0 工时成员 — 空数组也算通过）
+    for (const member of result.summary.members) {
+      assert(
+        Array.isArray(member.by_type),
+        `${member.user.display_name} 应有 by_type 数组（group_by=type 时）`
+      );
+    }
+  }),
+
+  test('AC10.3 - group_by=week 返回 ISO 8601 周格式', async () => {
+    const fixtures = await getFixtures();
+    const { userWorkSummary } = await import('../dist/tools/userWorkSummary.js');
+    const result = await userWorkSummary({
+      user: { id: fixtures.userId },
+      time_range: { start: '2026-01-01', end: '2026-01-31' },
+      group_by: 'week',
+      top_n: 5
+    });
+
+    assert(!result.error, `返回错误: ${result.error}`);
+    assert(Array.isArray(result.summary.by_week), '应有 by_week 数组');
+    assert(result.summary.by_week.length > 0, 'by_week 应非空（该用户在查询时段有工时）');
+
+    // 验证 ISO 8601 周格式: YYYY-WNN（W01 到 W53）
+    const weekRegex = /^\d{4}-W(0[1-9]|[1-4]\d|5[0-3])$/;
+    for (const entry of result.summary.by_week) {
+      assert(
+        weekRegex.test(entry.week),
+        `周格式应为 ISO 8601 (YYYY-WNN)，实际: ${entry.week}`
+      );
+      assert(typeof entry.hours === 'number', 'by_week 条目应有 hours');
+    }
+
+    // 2026 年 1 月的数据应在 W01 - W05 范围内
+    for (const entry of result.summary.by_week) {
+      const weekNum = parseInt(entry.week.split('-W')[1], 10);
+      assert(
+        entry.week.startsWith('2026-W') && weekNum >= 1 && weekNum <= 5,
+        `1 月数据周号应在 W01-W05 范围，实际: ${entry.week}`
+      );
+    }
+  }),
+
+  test('AC10.4 - group_by=week 团队汇总周格式一致', async () => {
+    const { teamWorkSummary } = await import('../dist/tools/teamWorkSummary.js');
+    const result = await teamWorkSummary({
+      time_range: { start: '2026-01-01', end: '2026-01-31' },
+      group_by: 'week',
+      top_n: 5
+    });
+
+    assert(!result.error, `返回错误: ${result.error}`);
+    assert(Array.isArray(result.summary.by_week), 'summary.by_week 应为数组');
+
+    const weekRegex = /^\d{4}-W(0[1-9]|[1-4]\d|5[0-3])$/;
+    for (const entry of result.summary.by_week) {
+      assert(weekRegex.test(entry.week), `周格式不合规: ${entry.week}`);
+    }
+
+    // 成员级别也应有 by_week
+    const membersWithHours = result.summary.members.filter(m => m.total_hours > 0);
+    for (const member of membersWithHours) {
+      assert(
+        Array.isArray(member.by_week),
+        `${member.user.display_name} 应有 by_week 数组（group_by=week 时）`
+      );
+      for (const entry of member.by_week) {
+        assert(weekRegex.test(entry.week), `成员周格式不合规: ${entry.week}`);
+      }
+    }
+  }),
+
+  test('AC10.5 - ISO 周跨年边界正确性', async () => {
+    const { workloadService } = await import('../dist/services/workloadService.js');
+
+    // 构造本地日期的 Unix 时间戳（秒），保证 getWeekKey 内部 new Date() 解析到正确的本地日期
+    function localNoon(year, month, day) {
+      return new Date(year, month - 1, day, 12, 0, 0).getTime() / 1000;
+    }
+
+    // 2026-01-01 是周四，因此 ISO W01 的周一 = 2025-12-29
+    const cases = [
+      { ts: localNoon(2025, 12, 28), expected: '2025-W52', label: '2025-12-28 (Sun)' },
+      { ts: localNoon(2025, 12, 29), expected: '2026-W01', label: '2025-12-29 (Mon)' },
+      { ts: localNoon(2026, 1, 1),   expected: '2026-W01', label: '2026-01-01 (Thu)' },
+      { ts: localNoon(2026, 1, 4),   expected: '2026-W01', label: '2026-01-04 (Sun)' },
+      { ts: localNoon(2026, 1, 5),   expected: '2026-W02', label: '2026-01-05 (Mon)' },
+    ];
+
+    for (const { ts, expected, label } of cases) {
+      const actual = workloadService.getWeekKey(ts);
+      assert(
+        actual === expected,
+        `${label}: 期望 ${expected}，实际 ${actual}`
+      );
+    }
+  }),
+];
+
+// ============ AC11: 输入参数与配置校验 ============
+
+const ac11Tests = [
+  test('AC11.1 - 未实现的 TOKEN_MODE 启动时给出警告', async () => {
+    // TOKEN_MODE=user 尚未实现，服务应在启动时提醒运维人员
+    const indexCode = fs.readFileSync(join(projectRoot, 'src/index.ts'), 'utf-8');
+    assert(
+      indexCode.includes("tokenMode === 'user'"),
+      'index.ts 应包含 TOKEN_MODE=user 检测逻辑'
+    );
+    assert(
+      indexCode.includes('not yet supported'),
+      'index.ts 应对 TOKEN_MODE=user 输出警告'
+    );
+  }),
+
+  test('AC11.2 - list_users 分页参数 page_index 不接受 < 1', async () => {
+    const { ListUsersInputSchema } = await import('../dist/tools/listUsers.js');
+
+    // page_index=0 和负数应被拒绝
+    const result0 = ListUsersInputSchema.safeParse({ page_index: 0 });
+    assert(!result0.success, 'page_index=0 应被拒绝');
+
+    const resultNeg = ListUsersInputSchema.safeParse({ page_index: -1 });
+    assert(!resultNeg.success, 'page_index=-1 应被拒绝');
+
+    // page_index=1 是合法下限
+    const result1 = ListUsersInputSchema.safeParse({ page_index: 1 });
+    assert(result1.success, 'page_index=1 应通过');
+  }),
+
+  test('AC11.3 - list_users 分页参数 page_size 不接受 < 1', async () => {
+    const { ListUsersInputSchema } = await import('../dist/tools/listUsers.js');
+
+    const result0 = ListUsersInputSchema.safeParse({ page_size: 0 });
+    assert(!result0.success, 'page_size=0 应被拒绝');
+
+    const result1 = ListUsersInputSchema.safeParse({ page_size: 1 });
+    assert(result1.success, 'page_size=1 应通过');
+  }),
+];
+
+// ============ AC12: 查询性能与缓存 ============
+
+const ac12Tests = [
+  test('AC12.1 - 批量工时查询少量用户走逐用户服务端过滤', async () => {
+    // 当用户数较少时，应逐用户调用服务端过滤以减少传输量
+    const workloadsCode = fs.readFileSync(join(projectRoot, 'src/api/endpoints/workloads.ts'), 'utf-8');
+    assert(
+      workloadsCode.includes('PER_USER_THRESHOLD'),
+      '批量查询应定义用户数阈值常量'
+    );
+    assert(
+      workloadsCode.includes('userIds.length <= PER_USER_THRESHOLD'),
+      '批量查询应按用户数分支执行不同策略'
+    );
+
+    // 行为验证：少量用户调用返回每人独立的结果
+    const fixtures = await getFixtures();
+    const { listWorkloadsForUsers } = await import('../dist/api/endpoints/workloads.js');
+    const { parseTimeRange } = await import('../dist/utils/timeUtils.js');
+
+    const range = parseTimeRange('2026-01-01', '2026-01-31');
+    const userIds = [fixtures.userId];
+    const resultMap = await listWorkloadsForUsers(userIds, range.start, range.end);
+
+    assert(resultMap instanceof Map, '应返回 Map 实例');
+    assert(resultMap.has(fixtures.userId), '结果应包含查询的用户');
+
+    const userResult = resultMap.get(fixtures.userId);
+    assert(Array.isArray(userResult.workloads), '用户结果应有 workloads 数组');
+    assert(typeof userResult.totalCount === 'number', '用户结果应有 totalCount');
+  }),
+
+  test('AC12.2 - 用户列表第二次查询命中缓存', async () => {
+    const { metrics } = await import('../dist/utils/metrics.js');
+
+    // 第一次调用（填充缓存）
+    const { listUsers } = await import('../dist/api/endpoints/users.js');
+    await listUsers();
+    const snapshot1 = metrics.getSnapshot();
+
+    // 第二次调用应命中缓存
+    await listUsers();
+    const snapshot2 = metrics.getSnapshot();
+
+    assert(
+      snapshot2.cache.hits > snapshot1.cache.hits,
+      `第二次调用 cache.hits 应增加（before: ${snapshot1.cache.hits}, after: ${snapshot2.cache.hits}）`
+    );
+  }),
+
+  test('AC12.3 - 用户列表缓存使用配置的 TTL', async () => {
+    const usersCode = fs.readFileSync(join(projectRoot, 'src/api/endpoints/users.ts'), 'utf-8');
+    assert(
+      usersCode.includes('CacheKeys.usersList()'),
+      'users.ts 应使用统一的缓存键'
+    );
+    assert(
+      usersCode.includes('config.cache.ttlUsers'),
+      'users.ts 缓存 TTL 应从配置读取'
+    );
+  }),
+];
+
 // ============ 运行测试 ============
 async function runAllTests() {
   console.log('╔════════════════════════════════════════════════════════════╗');
@@ -747,6 +1196,10 @@ async function runAllTests() {
     { name: 'AC6: 交互示例场景', tests: ac6Tests },
     { name: 'AC7: list_workloads PRD 参数', tests: ac7Tests },
     { name: 'AC8: MCP 业务错误 isError 语义', tests: ac8Tests },
+    { name: 'AC9: Schema 一致性', tests: ac9Tests },
+    { name: 'AC10: 聚合维度正确性', tests: ac10Tests },
+    { name: 'AC11: 输入参数与配置校验', tests: ac11Tests },
+    { name: 'AC12: 查询性能与缓存', tests: ac12Tests },
   ];
 
   for (const group of testGroups) {

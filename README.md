@@ -79,13 +79,15 @@ TRANSPORT_MODE=stdio
 
 | 工具 | 说明 |
 |------|------|
-| `user_work_summary` | 个人工时汇总（按日/周/月/项目聚合） |
-| `team_work_summary` | 团队工时汇总（Top N 工作项） |
-| `list_users` | 成员列表 |
-| `list_workloads` | 工时明细 |
+| `user_work_summary` | 个人工时汇总（按日/周/月/项目/类型聚合） |
+| `team_work_summary` | 团队工时汇总（Top N 工作项，含 0 工时成员） |
+| `list_users` | 成员列表（带缓存，TTL 1h） |
+| `list_workloads` | 工时明细（支持 filter_project_id） |
+| `get_work_item` | 工作项详情 |
 | `get_metrics` | 运行指标 |
+| `get_tool_versions` | 工具版本信息 |
 
-**特性**：中文时间别名（`上周`、`本月`）、超 3 月自动分片、姓名模糊匹配
+**特性**：中文时间别名（`上周`、`本月`）、超 3 月自动分片、ISO 8601 周计算、姓名模糊匹配、group_by=type 类型聚合
 
 ---
 
@@ -106,8 +108,16 @@ TRANSPORT_MODE=stdio
 | `PINGCODE_TOKEN` | API Token | **必填** |
 | `TRANSPORT_MODE` | 传输模式 | `stdio` |
 | `HTTP_PORT` | HTTP 端口 | `3000` |
-| `MCP_API_KEY` | API Key（HTTP 模式） | - |
+| `HTTP_HOST` | HTTP 绑定地址 | `127.0.0.1` |
+| `MCP_API_KEY` | API Key（HTTP 模式必填） | - |
+| `ALLOWED_ORIGINS` | 允许的 Origin（逗号分隔） | 空（全放行） |
+| `TRUST_PROXY` | 信任反向代理头 | `false` |
+| `HTTP_MAX_SESSIONS` | HTTP 最大并发 session 数 | `100` |
+| `HTTP_SESSION_TTL_MS` | Session 空闲过期时间（ms） | `1800000` |
+| `REQUEST_TIMEOUT` | API 请求超时（ms） | `15000` |
 | `TIMEZONE` | 时区 | `Asia/Shanghai` |
+| `NAME_MATCH_STRATEGY` | 姓名匹配策略 | `best` |
+| `LOG_LEVEL` | 日志级别 | `info` |
 
 ---
 
@@ -124,9 +134,10 @@ TRANSPORT_MODE=stdio
 ## 开发
 
 ```bash
-npm run dev      # 开发模式
-npm test         # 运行测试
-npm run typecheck
+npm run dev          # 开发模式
+npm test             # 回归测试（51 个用例）
+npm run test:http    # HTTP 安全测试（22 个用例）
+npm run typecheck    # 类型检查
 ```
 
 ## License

@@ -13,6 +13,11 @@ async function main() {
     process.exit(1);
   }
 
+  // TOKEN_MODE=user 尚未实现，给出明确警告
+  if (config.pingcode.tokenMode === 'user') {
+    logger.warn('TOKEN_MODE=user is not yet supported; falling back to enterprise token behavior');
+  }
+
   logger.info({
     transportMode: config.server.transportMode,
     timezone: config.timezone,
@@ -25,9 +30,6 @@ async function main() {
   } catch (error) {
     logger.error({ error }, 'Failed to connect to cache, continuing without cache');
   }
-
-  // Create MCP server
-  const server = createMcpServer();
 
   // Handle shutdown
   process.on('SIGINT', async () => {
@@ -44,13 +46,14 @@ async function main() {
 
   // Start server based on transport mode
   if (config.server.transportMode === 'stdio') {
-    // stdio 模式：本地进程通信
+    // stdio 模式：本地进程通信，单 Server + 单 Transport
+    const server = createMcpServer();
     const transport = new StdioServerTransport();
     await server.connect(transport);
     logger.info('MCP Server running on stdio');
   } else {
-    // HTTP 模式：网络服务
-    await startHttpServer(server);
+    // HTTP 模式：网络服务，每个 session 创建独立 Server（SDK 要求）
+    await startHttpServer(createMcpServer);
   }
 }
 

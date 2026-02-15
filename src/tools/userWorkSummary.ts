@@ -48,6 +48,7 @@ export interface UserWorkSummaryOutput {
     by_day?: Array<{ date: string; hours: number }>;
     by_week?: Array<{ week: string; hours: number }>;
     by_month?: Array<{ month: string; hours: number }>;
+    by_type?: Array<{ type: string; hours: number }>;
   };
   details: Array<{
     date: string;
@@ -199,6 +200,7 @@ function formatOutput(result: UserWorkResult): UserWorkSummaryOutput {
       by_day: result.summary.by_day,
       by_week: result.summary.by_week,
       by_month: result.summary.by_month,
+      by_type: result.summary.by_type,
     },
     details: result.details.map(d => ({
       date: d.date,
@@ -258,7 +260,7 @@ export const userWorkSummaryToolDefinition = {
       },
       group_by: {
         type: 'string',
-        enum: ['day', 'week', 'month', 'work_item', 'project'],
+        enum: ['day', 'week', 'month', 'work_item', 'project', 'type'],
         description: '聚合维度，默认 "work_item"',
       },
       top_n: {

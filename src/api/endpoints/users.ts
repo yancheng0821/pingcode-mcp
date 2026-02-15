@@ -1,6 +1,7 @@
 import { apiClient } from '../client.js';
 import { config } from '../../config/index.js';
 import { logger } from '../../utils/logger.js';
+import { cache, CacheKeys } from '../../cache/index.js';
 import type { PingCodeUser, PaginatedResponse } from '../types.js';
 
 export interface ListUsersParams {
@@ -15,38 +16,51 @@ export interface UserMatch {
 }
 
 /**
- * 获取企业成员列表
+ * 获取企业成员列表（带缓存）
  * GET /v1/directory/users
+ *
+ * 缓存策略：全量用户列表缓存 TTL = config.cache.ttlUsers (默认 1h)。
+ * 关键词过滤在缓存之后本地完成。
  */
 export async function listUsers(params: ListUsersParams = {}): Promise<PingCodeUser[]> {
   const { keyword, pageSize = 100, pageIndex = 0 } = params;
 
-  // 不缓存用户列表，确保能查到新加入的员工
-  const allUsers: PingCodeUser[] = [];
-  let currentPage = pageIndex;
-  let hasMore = true;
+  // 尝试从缓存读取全量用户列表
+  const cacheKey = CacheKeys.usersList();
+  let allUsers = await cache.get<PingCodeUser[]>(cacheKey);
 
-  while (hasMore) {
-    const response = await apiClient.request<PaginatedResponse<PingCodeUser>>(
-      '/v1/directory/users',
-      {
-        params: {
-          page_size: pageSize,
-          page_index: currentPage,
-        },
+  if (!allUsers) {
+    // 缓存未命中，从 API 拉取全量
+    allUsers = [];
+    let currentPage = pageIndex;
+    let hasMore = true;
+
+    while (hasMore) {
+      const response = await apiClient.request<PaginatedResponse<PingCodeUser>>(
+        '/v1/directory/users',
+        {
+          params: {
+            page_size: pageSize,
+            page_index: currentPage,
+          },
+        }
+      );
+
+      allUsers.push(...response.values);
+      // Calculate hasMore from pagination fields
+      hasMore = (response.page_index + 1) * response.page_size < response.total;
+      currentPage++;
+
+      // Safety limit
+      if (currentPage > config.pagination.maxPages) {
+        logger.warn({ currentPage }, 'Reached max pages limit for users');
+        break;
       }
-    );
-
-    allUsers.push(...response.values);
-    // Calculate hasMore from pagination fields
-    hasMore = (response.page_index + 1) * response.page_size < response.total;
-    currentPage++;
-
-    // Safety limit
-    if (currentPage > config.pagination.maxPages) {
-      logger.warn({ currentPage }, 'Reached max pages limit for users');
-      break;
     }
+
+    // 写入缓存
+    await cache.set(cacheKey, allUsers, config.cache.ttlUsers);
+    logger.debug({ count: allUsers.length, ttl: config.cache.ttlUsers }, 'User list cached');
   }
 
   // Filter by keyword if provided (client-side filtering)

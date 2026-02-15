@@ -144,6 +144,7 @@ export interface TeamWorkResult {
     };
     data_quality: {
         workloads_count: number;
+        /** 工作项详情获取失败的数量（unique ID 粒度，项目作用域内精确值） */
         missing_work_item_count: number;
         unknown_user_matches: number;
         time_sliced: boolean;
@@ -251,8 +252,8 @@ export class WorkloadService {
             targetUserIds = allUsers.map(u => u.id);
         }
 
-        // 2. 批量获取工时数据
-        const workloadsMap = await listWorkloadsForUsers(targetUserIds, startAt, endAt);
+        // 2. 批量获取工时数据（projectId 由 API 服务端 pilot_id 过滤）
+        const workloadsMap = await listWorkloadsForUsers(targetUserIds, startAt, endAt, { projectId });
 
         // 3. 获取用户信息
         const usersMap = await userService.getUsersMap(targetUserIds);
@@ -264,20 +265,18 @@ export class WorkloadService {
         }
 
         // 5. 获取工作项详情
-        const { workItems } = await workItemService.enrichWorkloadsWithWorkItems(allWorkloads);
+        const { workItems, missingCount } = await workItemService.enrichWorkloadsWithWorkItems(allWorkloads);
 
-        // 6. 按项目过滤（如果指定）
-        let filteredWorkloadsMap = workloadsMap;
-        if (projectId) {
-            filteredWorkloadsMap = this.filterByProject(workloadsMap, workItems, projectId);
-        }
+        // 6. projectId 已在 API 层过滤（pilot_id），无需本地二次过滤。
+        //    missingCount 即为目标项目作用域内的精确缺失数。
+        const filteredWorkloadsMap = workloadsMap;
+        const totalMissingWorkItemCount = missingCount;
 
         // 7. 聚合每个用户的数据
         const members: TeamMemberSummary[] = [];
         const allDetails: TeamWorkloadDetail[] = [];
         let totalHours = 0;
         let totalWorkloadsCount = 0;
-        let totalMissingWorkItemCount = 0;
         let anyTimeSliced = false;
         let anyPaginationTruncated = false;
 
@@ -287,44 +286,42 @@ export class WorkloadService {
 
             const aggregated = this.aggregateWorkloads(result.workloads, workItems, groupBy as GroupBy, topN);
 
-            if (aggregated.totalHours > 0) {
-                // 根据 groupBy 构建成员聚合数据
-                const memberSummary: TeamMemberSummary = {
-                    user,
-                    total_hours: aggregated.totalHours,
-                };
+            // 根据 groupBy 构建成员聚合数据（包含 0 工时用户 — P1-2 修复）
+            const memberSummary: TeamMemberSummary = {
+                user,
+                total_hours: aggregated.totalHours,
+            };
 
-                // 根据 groupBy 决定成员层级的输出字段
-                switch (groupBy) {
-                    case 'day':
-                        memberSummary.by_day = aggregated.byDay;
-                        break;
-                    case 'week':
-                        memberSummary.by_week = aggregated.byWeek;
-                        break;
-                    case 'month':
-                        memberSummary.by_month = aggregated.byMonth;
-                        break;
-                    case 'project':
-                        memberSummary.by_project = aggregated.byProject.slice(0, topN);
-                        break;
-                    case 'work_item':
-                        memberSummary.by_work_item = aggregated.byWorkItem.slice(0, topN);
-                        break;
-                    case 'type':
-                        memberSummary.by_type = aggregated.byType;
-                        break;
-                    case 'user':
-                    default:
-                        // 默认：同时输出 top_projects 和 top_work_items
-                        memberSummary.top_projects = aggregated.byProject.slice(0, topN);
-                        memberSummary.top_work_items = aggregated.byWorkItem.slice(0, topN);
-                        break;
-                }
-
-                members.push(memberSummary);
-                totalHours += aggregated.totalHours;
+            // 根据 groupBy 决定成员层级的输出字段
+            switch (groupBy) {
+                case 'day':
+                    memberSummary.by_day = aggregated.byDay;
+                    break;
+                case 'week':
+                    memberSummary.by_week = aggregated.byWeek;
+                    break;
+                case 'month':
+                    memberSummary.by_month = aggregated.byMonth;
+                    break;
+                case 'project':
+                    memberSummary.by_project = aggregated.byProject.slice(0, topN);
+                    break;
+                case 'work_item':
+                    memberSummary.by_work_item = aggregated.byWorkItem.slice(0, topN);
+                    break;
+                case 'type':
+                    memberSummary.by_type = aggregated.byType;
+                    break;
+                case 'user':
+                default:
+                    // 默认：同时输出 top_projects 和 top_work_items
+                    memberSummary.top_projects = aggregated.byProject.slice(0, topN);
+                    memberSummary.top_work_items = aggregated.byWorkItem.slice(0, topN);
+                    break;
             }
+
+            members.push(memberSummary);
+            totalHours += aggregated.totalHours;
 
             // 构建该用户的明细
             for (const w of result.workloads) {
@@ -573,34 +570,6 @@ export class WorkloadService {
     }
 
     /**
-     * 按项目过滤工时
-     */
-    private filterByProject(
-        workloadsMap: Map<string, WorkloadsResult>,
-        workItems: Map<string, WorkItemInfo>,
-        projectId: string
-    ): Map<string, WorkloadsResult> {
-        const filtered = new Map<string, WorkloadsResult>();
-
-        for (const [userId, result] of workloadsMap) {
-            // 通过 work_item 获取 project.id 进行过滤
-            const filteredWorkloads = result.workloads.filter(w => {
-                if (!w.work_item) return false;
-                const workItem = workItems.get(w.work_item.id);
-                return workItem?.project?.id === projectId;
-            });
-
-            filtered.set(userId, {
-                ...result,
-                workloads: filteredWorkloads,
-                totalCount: filteredWorkloads.length,
-            });
-        }
-
-        return filtered;
-    }
-
-    /**
      * 构建人天矩阵
      */
     private buildDayMatrix(
@@ -652,16 +621,27 @@ export class WorkloadService {
     }
 
     /**
-     * 获取周的 key (ISO week format: "2026-W05")
+     * 获取周的 key (ISO 8601 week format: "2026-W05")
+     *
+     * ISO 8601: Week 1 = the week containing the year's first Thursday.
+     * The ISO year may differ from the calendar year at year boundaries.
      */
     private getWeekKey(timestamp: number): string {
         const date = new Date(timestamp * 1000);
-        const year = date.getFullYear();
 
-        // 计算 ISO 周数
-        const jan1 = new Date(year, 0, 1);
-        const days = Math.floor((date.getTime() - jan1.getTime()) / (24 * 60 * 60 * 1000));
-        const weekNum = Math.ceil((days + jan1.getDay() + 1) / 7);
+        // Find the Thursday of the current week (ISO weeks start on Monday)
+        const target = new Date(date.valueOf());
+        target.setDate(target.getDate() - ((target.getDay() + 6) % 7) + 3);
+        const firstThursday = target.valueOf();
+
+        // Find the first Thursday of the ISO year
+        target.setMonth(0, 1);
+        if (target.getDay() !== 4) {
+            target.setMonth(0, 1 + ((4 - target.getDay()) + 7) % 7);
+        }
+
+        const weekNum = 1 + Math.ceil((firstThursday - target.valueOf()) / (7 * 24 * 60 * 60 * 1000));
+        const year = new Date(firstThursday).getFullYear();
 
         return `${year}-W${weekNum.toString().padStart(2, '0')}`;
     }

@@ -1,7 +1,7 @@
 # PingCode MCP Server 设计方案
 
-> 日期：2026-02-05
-> 状态：已实施
+> 日期：2026-02-15
+> 状态：已实施（P0/P1/P2 修复完成，73 个测试全部通过）
 
 ## 1. 概述
 
@@ -105,7 +105,8 @@ pingcode-mcp/
 │   │   ├── index.ts          # 缓存接口
 │   │   └── memory.ts         # 内存缓存实现
 │   ├── server/
-│   │   └── http.ts           # HTTP/SSE 服务器
+│   │   ├── mcp.ts            # MCP Server 创建与工具注册
+│   │   └── http.ts           # HTTP/SSE 服务器（鉴权、Origin 校验、Session 管理）
 │   ├── utils/                # 工具函数
 │   │   ├── timeUtils.ts      # 时间戳转换、分片逻辑
 │   │   ├── logger.ts         # 日志（含脱敏）
@@ -113,7 +114,8 @@ pingcode-mcp/
 │   └── config/               # 配置管理
 │       └── index.ts
 ├── tests/
-│   └── regression.mjs        # 回归测试（30个测试用例）
+│   ├── regression.mjs        # 回归测试（51 个用例）
+│   └── http-security.mjs     # HTTP 安全与部署测试（22 个用例）
 ├── docker/
 │   └── Dockerfile            # MCP Server 镜像
 ├── docker-compose.yml
@@ -163,6 +165,8 @@ const delay = Math.min(
 | maxDelay 上限 | 防止无限等待 |
 | Rate Limiter | 全局限流 200/min |
 | 可重试状态码白名单 | 只对临时性错误重试 |
+| AbortController 超时 | 单次请求超过 `REQUEST_TIMEOUT`（默认 15s）自动取消 |
+| 429 Retry-After | 尊重服务端返回的 `Retry-After` 头，避免盲目重试 |
 
 ### 4.2 兼容性：工具版本管理
 
@@ -305,12 +309,12 @@ PingCode `/v1/workloads` API 支持的过滤参数：
 
 | 数据类型 | Cache Key 格式 | TTL | 说明 |
 |---------|---------------|-----|------|
-| 用户列表 | `users:list` | 1h | 全员列表，变动少 |
+| 用户列表 | `users:list` | 1h (`CACHE_TTL_USERS`) | 全员列表，已实现 |
 | 用户详情 | `users:{id}` | 1h | 单个用户信息 |
-| 工作项详情 | `work_items:{id}` | 6h | 标题/状态相对稳定 |
+| 工作项详情 | `work_items:{id}` | 6h (`CACHE_TTL_WORK_ITEMS`) | 标题/状态相对稳定 |
 | 工时数据 | 不缓存 | - | 实时性要求高 |
 
-### 4.6 权限与鉴权
+### 4.7 权限与鉴权
 
 **PingCode API 鉴权**：`src/api/client.ts`
 
@@ -327,10 +331,17 @@ headers: {
 token: z.string().min(1, 'PINGCODE_TOKEN is required'),
 ```
 
-**HTTP 模式 API Key**：`src/server/http.ts`
+**HTTP 模式安全**：`src/server/http.ts`
 
-- 支持 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`
+- API Key 鉴权：支持 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`
 - 未配置 MCP_API_KEY 时拒绝启动 HTTP 模式
+- Origin 校验：通过 `ALLOWED_ORIGINS` 配置防 DNS rebinding（未配置时向后兼容放行）
+- CORS：动态反射受信 Origin，Allow-Headers 包含 `X-API-Key`、`MCP-Protocol-Version`
+- 默认绑定 `127.0.0.1`，需通过 `HTTP_HOST=0.0.0.0` 显式暴露到网络
+- Session 管理：上限 `HTTP_MAX_SESSIONS`（默认 100），空闲超时 `HTTP_SESSION_TTL_MS`（默认 30 分钟）
+- 每个 HTTP session 创建独立的 MCP Server 实例（SDK 要求）
+- 非法 JSON 请求体返回 400（非静默吞错）
+- 支持 DELETE /mcp 主动终止 session
 
 ---
 
@@ -408,6 +419,41 @@ token: z.string().min(1, 'PINGCODE_TOKEN is required'),
 - 多项目工时汇总
 - 人天矩阵
 
+### AC7：list_workloads PRD 参数 ✅
+
+- 验证使用 `/v1/workloads` 接口
+- principal_type=user/project/work_item 各场景
+- report_by_id 兼容参数
+- principal_type 和 principal_id 必须同时提供
+
+### AC8：MCP 业务错误 isError 语义 ✅
+
+- NO_DATA / USER_NOT_FOUND 业务错误标记 `isError: true`
+- 正常数据 `isError` 不为 true
+- unknown tool 返回 `isError: true`
+
+### AC9：Schema 一致性 ✅
+
+- user_work_summary / team_work_summary JSON Schema 包含 `group_by=type`
+- list_workloads JSON Schema 包含 `filter_project_id`
+
+### AC10：聚合维度正确性 ✅
+
+- group_by=type 用户/团队汇总返回 `by_type` 字段
+- group_by=week 返回 ISO 8601 周格式（YYYY-WNN）
+- ISO 周跨年边界正确性（first-Thursday 算法）
+
+### AC11：输入参数与配置校验 ✅
+
+- 未实现的 TOKEN_MODE 启动时给出警告
+- list_users 分页参数 page_index / page_size 不接受 < 1
+
+### AC12：查询性能与缓存 ✅
+
+- 批量工时查询少量用户走逐用户服务端过滤
+- 用户列表第二次查询命中缓存
+- 用户列表缓存使用配置的 TTL
+
 ---
 
 ## 7. 回归测试
@@ -416,21 +462,39 @@ token: z.string().min(1, 'PINGCODE_TOKEN is required'),
 
 **运行方式**：
 ```bash
-npm run test        # 完整输出
-npm run test:quiet  # 简洁输出
+npm run test        # 回归测试（51 个用例，需要 PINGCODE_TOKEN）
+npm run test:http   # HTTP 安全测试（22 个用例，使用 Mock 服务器）
+npm run typecheck   # TypeScript 类型检查
 ```
 
-**测试覆盖（30 个测试）**：
+**回归测试覆盖（51 个用例）**：
 
-| AC | 测试数 | 说明 |
-|----|--------|------|
-| AC1 | 5 | 团队时间段查询 |
+| 分组 | 测试数 | 说明 |
+|------|--------|------|
+| AC1 | 8 | 团队时间段查询（含 0 工时用户、项目过滤、missing_count） |
 | AC2 | 3 | 自动分片 |
 | AC3 | 4 | 权限鉴权 |
 | AC4 | 4 | 可观测性 |
 | AC5 | 2 | NO_DATA 处理 |
 | AC6 | 6 | 交互场景 |
 | AC7 | 6 | list_workloads PRD 参数 |
+| AC8 | 4 | MCP 业务错误 isError 语义 |
+| AC9 | 3 | Schema 一致性（Zod vs JSON Schema） |
+| AC10 | 5 | 聚合维度（ISO 周、group_by=type） |
+| AC11 | 3 | 输入参数与配置校验 |
+| AC12 | 3 | 查询性能与缓存 |
+
+**HTTP 安全测试覆盖（22 个用例，`tests/http-security.mjs`）**：
+
+| 分组 | 测试数 | 说明 |
+|------|--------|------|
+| SEC1 | 3 | Origin 验证（防 DNS rebinding） |
+| SEC2 | 3 | CORS 头（反射 Origin、预检、Expose） |
+| SEC3 | 4 | API Key 鉴权（Bearer / X-API-Key） |
+| SEC4 | 4 | 公开端点（/health、/metrics、404） |
+| SEC5 | 2 | API 超时与 429 Retry-After |
+| SEC6 | 3 | Session 管理（上限 503、TTL 过期、DELETE） |
+| SEC7 | 3 | 请求解析与部署配置 |
 
 ---
 
@@ -440,18 +504,27 @@ npm run test:quiet  # 简洁输出
 # === PingCode API ===
 PINGCODE_BASE_URL=https://open.pingcode.com
 PINGCODE_TOKEN=your_bearer_token_here
-TOKEN_MODE=enterprise          # enterprise | user
+TOKEN_MODE=enterprise          # enterprise | user（user 尚未实现）
 
 # === Server ===
 TRANSPORT_MODE=stdio           # stdio | http
 HTTP_PORT=3000                 # HTTP 模式端口
+HTTP_HOST=127.0.0.1            # 绑定地址（0.0.0.0 暴露到网络）
+HTTP_MAX_SESSIONS=100          # 最大并发 session 数
+HTTP_SESSION_TTL_MS=1800000    # Session 空闲过期时间（30 分钟）
 
 # === Auth (HTTP 模式) ===
 MCP_API_KEY=                   # HTTP 模式必填
-TRUST_PROXY=false              # 信任代理头
+TRUST_PROXY=false              # 信任反向代理头（X-Forwarded-For / X-Real-IP）
+ALLOWED_ORIGINS=               # 允许的 Origin 列表，逗号分隔（防 DNS rebinding）
 
-# === Rate Limit ===
-RATE_LIMIT_PER_MIN=200         # PingCode API 限制
+# === API Client ===
+REQUEST_TIMEOUT=15000          # 单次 API 请求超时（ms）
+RATE_LIMIT_PER_MIN=200         # PingCode API 限流
+
+# === Cache ===
+CACHE_TTL_USERS=3600           # 用户列表缓存 TTL（秒，默认 1h）
+CACHE_TTL_WORK_ITEMS=21600     # 工作项缓存 TTL（秒，默认 6h）
 
 # === Timezone ===
 TIMEZONE=Asia/Shanghai         # 企业默认时区

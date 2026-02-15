@@ -207,27 +207,41 @@ export async function listProjectWorkloads(
 
 /**
  * 批量获取多个用户的工时记录
- * 策略：一次拉取全部数据，本地按用户分组（避免 N 次 API 调用）
+ *
+ * 策略选择：
+ * - 用户数 ≤ PER_USER_THRESHOLD：逐用户调用服务端 report_by_id 过滤（减少下载量）
+ * - 用户数 > PER_USER_THRESHOLD：一次拉取全部数据，本地按用户分组（减少 API 调用）
  */
+const PER_USER_THRESHOLD = 5;
+
 export async function listWorkloadsForUsers(
   userIds: string[],
   startAt: number,
-  endAt: number
+  endAt: number,
+  options?: { projectId?: string }
 ): Promise<Map<string, WorkloadsResult>> {
-  // 拉取时间范围内的所有工时记录（不带用户过滤）
-  const allResult = await listWorkloads({ startAt, endAt });
-
+  const { projectId } = options || {};
   const results = new Map<string, WorkloadsResult>();
 
-  // 按用户分组
-  for (const userId of userIds) {
-    const userWorkloads = allResult.workloads.filter(w => w.report_by.id === userId);
-    results.set(userId, {
-      workloads: userWorkloads,
-      totalCount: userWorkloads.length,
-      timeSliced: allResult.timeSliced,
-      paginationTruncated: allResult.paginationTruncated,
-    });
+  if (userIds.length <= PER_USER_THRESHOLD) {
+    // 少量用户：逐用户服务端过滤，减少传输量
+    for (const userId of userIds) {
+      const result = await listWorkloads({ startAt, endAt, userId, projectId });
+      results.set(userId, result);
+    }
+  } else {
+    // 大量用户：拉取全量，本地分组（避免 N 次 API 调用）
+    const allResult = await listWorkloads({ startAt, endAt, projectId });
+
+    for (const userId of userIds) {
+      const userWorkloads = allResult.workloads.filter(w => w.report_by.id === userId);
+      results.set(userId, {
+        workloads: userWorkloads,
+        totalCount: userWorkloads.length,
+        timeSliced: allResult.timeSliced,
+        paginationTruncated: allResult.paginationTruncated,
+      });
+    }
   }
 
   return results;

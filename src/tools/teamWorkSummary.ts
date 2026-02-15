@@ -52,6 +52,8 @@ export interface TeamWorkSummaryOutput {
       // 项目/工作项维度
       by_project?: Array<{ project: { id: string; identifier: string; name: string; type?: string }; hours: number }>;
       by_work_item?: Array<{ work_item: { id: string; identifier: string; title: string; project: { id: string; identifier: string; name: string; type?: string } }; hours: number }>;
+      // 类型维度
+      by_type?: Array<{ type: string; hours: number }>;
     }>;
     // 按时间维度聚合
     by_day?: Array<{ date: string; hours: number }>;
@@ -60,6 +62,8 @@ export interface TeamWorkSummaryOutput {
     // 按项目/工作项聚合
     by_project?: Array<{ project: { id: string; identifier: string; name: string; type?: string }; hours: number }>;
     by_work_item?: Array<{ work_item: { id: string; identifier: string; title: string; project: { id: string; identifier: string; name: string; type?: string } }; hours: number }>;
+    // 按类型聚合
+    by_type?: Array<{ type: string; hours: number }>;
   };
   details: Array<{
     date: string;
@@ -236,6 +240,9 @@ function formatOutput(result: TeamWorkResult): TeamWorkSummaryOutput {
             hours: w.hours,
           }));
         }
+        if (m.by_type) {
+          member.by_type = m.by_type;
+        }
 
         return member;
       }),
@@ -304,6 +311,11 @@ function formatOutput(result: TeamWorkResult): TeamWorkSummaryOutput {
     }));
   }
 
+  // 添加类型聚合
+  if (result.summary.by_type) {
+    output.summary.by_type = result.summary.by_type;
+  }
+
   if (result.by_day_matrix) {
     output.by_day_matrix = {
       dates: result.by_day_matrix.dates,
@@ -360,7 +372,7 @@ export const teamWorkSummaryToolDefinition = {
       },
       group_by: {
         type: 'string',
-        enum: ['user', 'project', 'work_item', 'day', 'week', 'month'],
+        enum: ['user', 'project', 'work_item', 'day', 'week', 'month', 'type'],
         description: '聚合维度，默认 "user"',
       },
       top_n: {

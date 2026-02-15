@@ -94,9 +94,31 @@ function getClientIp(req: IncomingMessage): string {
 /**
  * 启动 HTTP/SSE 模式的 MCP Server
  */
-export async function startHttpServer(mcpServer: Server): Promise<void> {
+const MAX_SESSIONS = config.server.httpMaxSessions;
+const SESSION_TTL_MS = config.server.httpSessionTtlMs;
+const SESSION_CLEANUP_INTERVAL_MS = Math.min(60_000, Math.max(1_000, Math.floor(SESSION_TTL_MS / 2)));
+
+export async function startHttpServer(serverFactory: () => Server): Promise<void> {
   // 存储活跃的 transport 实例（按 session ID）
   const transports = new Map<string, StreamableHTTPServerTransport>();
+  const sessionLastActive = new Map<string, number>();
+
+  // 定期清理过期 session
+  const cleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [id, lastActive] of sessionLastActive) {
+      if (now - lastActive > SESSION_TTL_MS) {
+        const transport = transports.get(id);
+        if (transport) {
+          transport.close();
+        }
+        transports.delete(id);
+        sessionLastActive.delete(id);
+        logger.info({ sessionId: id, idleMs: now - lastActive }, 'Session expired by TTL');
+      }
+    }
+  }, SESSION_CLEANUP_INTERVAL_MS);
+  cleanupTimer.unref(); // 不阻止进程退出
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
@@ -151,6 +173,7 @@ export async function startHttpServer(mcpServer: Server): Promise<void> {
         const transport = transports.get(sessionId)!;
         transport.close();
         transports.delete(sessionId);
+        sessionLastActive.delete(sessionId);
         logger.info({ sessionId }, 'Session terminated by client');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok' }));
@@ -178,37 +201,51 @@ export async function startHttpServer(mcpServer: Server): Promise<void> {
         const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
         let transport: StreamableHTTPServerTransport;
+        let isNewSession = false;
 
         if (sessionId && transports.has(sessionId)) {
-          // 复用已有的 transport
+          // 复用已有的 transport — 续期
           transport = transports.get(sessionId)!;
+          sessionLastActive.set(sessionId, Date.now());
         } else {
+          // 容量检查
+          if (transports.size >= MAX_SESSIONS) {
+            logger.warn({ current: transports.size, max: MAX_SESSIONS }, 'Session limit reached');
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Service Unavailable', message: 'Too many active sessions' }));
+            return;
+          }
+
           // 创建新的 transport
           transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
           });
 
-          // 连接到 MCP Server
-          await mcpServer.connect(transport);
+          // 为新 session 创建独立的 MCP Server（SDK 要求每个 transport 对应一个 Server 实例）
+          const sessionServer = serverFactory();
+          await sessionServer.connect(transport);
 
-          // 存储 transport
-          if (transport.sessionId) {
-            transports.set(transport.sessionId, transport);
+          // 清理关闭的连接
+          transport.onclose = () => {
+            if (transport.sessionId) {
+              transports.delete(transport.sessionId);
+              sessionLastActive.delete(transport.sessionId);
+              logger.info({ sessionId: transport.sessionId }, 'Session closed');
+            }
+          };
 
-            // 清理关闭的连接
-            transport.onclose = () => {
-              if (transport.sessionId) {
-                transports.delete(transport.sessionId);
-                logger.info({ sessionId: transport.sessionId }, 'Session closed');
-              }
-            };
-          }
-
-          logger.info({ sessionId: transport.sessionId }, 'New MCP session created');
+          isNewSession = true;
         }
 
-        // 处理请求
+        // 处理请求（initialize 消息会在此期间分配 sessionId）
         await transport.handleRequest(req, res, body);
+
+        // 新 session 在 handleRequest 之后才有 sessionId，此时存储
+        if (isNewSession && transport.sessionId) {
+          transports.set(transport.sessionId, transport);
+          sessionLastActive.set(transport.sessionId, Date.now());
+          logger.info({ sessionId: transport.sessionId }, 'New MCP session created');
+        }
       } catch (error) {
         logger.error({ error, path, method: req.method }, 'MCP request error');
         if (!res.headersSent) {
@@ -235,11 +272,14 @@ export async function startHttpServer(mcpServer: Server): Promise<void> {
   const shutdown = () => {
     logger.info('Shutting down HTTP server...');
 
+    clearInterval(cleanupTimer);
+
     // 关闭所有 transport
     for (const transport of transports.values()) {
       transport.close();
     }
     transports.clear();
+    sessionLastActive.clear();
 
     httpServer.close(() => {
       logger.info('HTTP server closed');

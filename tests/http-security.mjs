@@ -13,6 +13,8 @@
  * - SEC3: API Key 鉴权
  * - SEC4: 公开端点（/health, /metrics, 404）
  * - SEC5: API 客户端超时与 429 Retry-After
+ * - SEC6: Session 管理（上限、TTL、DELETE）
+ * - SEC7: 请求解析与部署配置（非法 JSON、绑定地址、CORS 头完整性）
  */
 
 import { createServer } from 'node:http';
@@ -31,6 +33,8 @@ process.env.HTTP_PORT          = String(TEST_HTTP_PORT);
 process.env.HTTP_HOST          = '127.0.0.1';
 process.env.ALLOWED_ORIGINS    = 'https://trusted.example.com,https://other.example.com';
 process.env.REQUEST_TIMEOUT    = '300';
+process.env.HTTP_MAX_SESSIONS  = '5';
+process.env.HTTP_SESSION_TTL_MS = '3000';
 process.env.LOG_LEVEL          = 'error';
 
 // ── 测试框架 ────────────────────────────────────────────────
@@ -282,6 +286,204 @@ const sec5Tests = [
   }),
 ];
 
+// ── SEC6: Session 管理 ──────────────────────────────────
+
+// MCP 协议要求客户端 Accept SSE 格式
+const MCP_HEADERS = {
+  'Authorization': `Bearer ${TEST_API_KEY}`,
+  'Content-Type': 'application/json',
+  'Accept': 'application/json, text/event-stream',
+};
+
+function mcpInitBody(id, clientName) {
+  return JSON.stringify({
+    jsonrpc: '2.0',
+    method: 'initialize',
+    id,
+    params: {
+      protocolVersion: '2025-03-26',
+      capabilities: {},
+      clientInfo: { name: clientName, version: '1.0.0' },
+    },
+  });
+}
+
+const sec6Tests = [
+  test('SEC6.1 - 超过 session 上限返回 503', async () => {
+    const sessions = [];
+
+    // 持续创建 session 直到触发上限
+    for (let i = 0; i < 20; i++) {
+      const res = await fetch(`${BASE}/mcp`, {
+        method: 'POST',
+        headers: MCP_HEADERS,
+        body: mcpInitBody(1000 + i, `limit-${i}`),
+      });
+
+      if (res.status === 503) {
+        const body = await res.json();
+        assert(body.message.includes('Too many'), `503 消息应含 "Too many": ${body.message}`);
+        assert(sessions.length >= 1, `应至少创建 1 个 session 才触发上限`);
+
+        // 清理已创建的 session
+        for (const sid of sessions) {
+          await fetch(`${BASE}/mcp`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${TEST_API_KEY}`, 'Mcp-Session-Id': sid },
+          });
+        }
+        return;
+      }
+
+      await res.text();
+      const sid = res.headers.get('mcp-session-id');
+      if (sid && !sessions.includes(sid)) sessions.push(sid);
+    }
+
+    // 清理
+    for (const sid of sessions) {
+      await fetch(`${BASE}/mcp`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${TEST_API_KEY}`, 'Mcp-Session-Id': sid },
+      });
+    }
+    assert(false, '创建 20 个 session 均未触发 503');
+  }),
+
+  test('SEC6.2 - session TTL 到期后自动清理释放名额', async () => {
+    const sessions = [];
+
+    // 填满所有 session 名额
+    for (let i = 0; i < 20; i++) {
+      const res = await fetch(`${BASE}/mcp`, {
+        method: 'POST',
+        headers: MCP_HEADERS,
+        body: mcpInitBody(2000 + i, `ttl-${i}`),
+      });
+
+      if (res.status === 503) break;
+      await res.text();
+      const sid = res.headers.get('mcp-session-id');
+      if (sid && !sessions.includes(sid)) sessions.push(sid);
+    }
+
+    // 确认已满
+    const full = await fetch(`${BASE}/mcp`, {
+      method: 'POST',
+      headers: MCP_HEADERS,
+      body: mcpInitBody(2099, 'ttl-full'),
+    });
+    await full.text();
+    assert(full.status === 503, `应已满返回 503，实际: ${full.status}`);
+
+    // 等待 TTL 到期 + 清理间隔（TTL=3s, cleanup~1.5s, 留余量）
+    await sleep(5500);
+
+    // TTL 到期后应能创建新 session
+    const afterExpiry = await fetch(`${BASE}/mcp`, {
+      method: 'POST',
+      headers: MCP_HEADERS,
+      body: mcpInitBody(2100, 'ttl-after'),
+    });
+
+    assert(
+      afterExpiry.status !== 503,
+      `TTL 到期后应能创建新 session，实际: ${afterExpiry.status}`
+    );
+
+    // 清理
+    const newSid = afterExpiry.headers.get('mcp-session-id');
+    if (newSid) {
+      await fetch(`${BASE}/mcp`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${TEST_API_KEY}`, 'Mcp-Session-Id': newSid },
+      });
+    }
+  }),
+
+  test('SEC6.3 - DELETE 终止 session 返回 200', async () => {
+    // 创建 session
+    const res = await fetch(`${BASE}/mcp`, {
+      method: 'POST',
+      headers: MCP_HEADERS,
+      body: mcpInitBody(3000, 'delete-test'),
+    });
+    await res.text();
+    const sessionId = res.headers.get('mcp-session-id');
+    assert(sessionId, '应返回 Mcp-Session-Id');
+
+    // 删除 session
+    const del = await fetch(`${BASE}/mcp`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${TEST_API_KEY}`, 'Mcp-Session-Id': sessionId },
+    });
+    assert(del.status === 200, `DELETE 应返回 200，实际: ${del.status}`);
+
+    // 重复删除应返回 404
+    const del2 = await fetch(`${BASE}/mcp`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${TEST_API_KEY}`, 'Mcp-Session-Id': sessionId },
+    });
+    assert(del2.status === 404, `重复 DELETE 应返回 404，实际: ${del2.status}`);
+  }),
+];
+
+// ── SEC7: 请求解析与部署配置 ─────────────────────────────
+
+const sec7Tests = [
+  test('SEC7.1 - 非法 JSON 请求体返回 400', async () => {
+    const res = await fetch(`${BASE}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${TEST_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+      },
+      body: '{invalid json!!!',
+    });
+    assert(res.status === 400, `期望 400，实际 ${res.status}`);
+    const body = await res.json();
+    assert(body.error === 'Bad Request', `error 应为 "Bad Request"，实际: ${body.error}`);
+    assert(body.message.includes('Invalid JSON'), `message 应含 "Invalid JSON"，实际: ${body.message}`);
+  }),
+
+  test('SEC7.2 - 服务默认绑定 127.0.0.1 且日志走 logger', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const __filename = fileURLToPath(import.meta.url);
+    const projectRoot = path.dirname(path.dirname(__filename));
+
+    const httpCode = fs.readFileSync(path.join(projectRoot, 'src/server/http.ts'), 'utf-8');
+    assert(
+      httpCode.includes("|| '127.0.0.1'"),
+      'http.ts 应默认绑定 127.0.0.1'
+    );
+    assert(
+      !httpCode.includes('console.log'),
+      'http.ts 不应使用 console.log（应使用 logger）'
+    );
+  }),
+
+  test('SEC7.3 - CORS Allow-Headers 包含鉴权与协议所需头', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const __filename = fileURLToPath(import.meta.url);
+    const projectRoot = path.dirname(path.dirname(__filename));
+
+    const httpCode = fs.readFileSync(path.join(projectRoot, 'src/server/http.ts'), 'utf-8');
+    assert(
+      httpCode.includes('X-API-Key'),
+      'CORS Allow-Headers 应包含 X-API-Key'
+    );
+    assert(
+      httpCode.includes('MCP-Protocol-Version'),
+      'CORS Allow-Headers 应包含 MCP-Protocol-Version'
+    );
+  }),
+];
+
 // ── 主流程 ────────────────────────────────────────────────
 
 async function main() {
@@ -294,15 +496,15 @@ async function main() {
   // 1. 启动 Mock PingCode API
   await new Promise(resolve => mockServer.listen(MOCK_API_PORT, '127.0.0.1', resolve));
 
-  // 2. 启动 MCP HTTP Server
+  // 2. 启动 MCP HTTP Server（工厂函数模式：每个 session 创建独立 Server）
   const { Server } = await import('@modelcontextprotocol/sdk/server/index.js');
   const { startHttpServer } = await import('../dist/server/http.js');
 
-  const mcpServer = new Server(
+  const serverFactory = () => new Server(
     { name: 'test-server', version: '1.0.0' },
     { capabilities: { tools: {} } },
   );
-  await startHttpServer(mcpServer);
+  await startHttpServer(serverFactory);
 
   // 等待 HTTP Server 就绪（轮询 /health）
   for (let i = 0; i < 30; i++) {
@@ -320,6 +522,8 @@ async function main() {
     { name: 'SEC3: API Key 鉴权',      tests: sec3Tests },
     { name: 'SEC4: 公开端点',          tests: sec4Tests },
     { name: 'SEC5: API 超时与重试',    tests: sec5Tests },
+    { name: 'SEC6: Session 管理',      tests: sec6Tests },
+    { name: 'SEC7: 请求解析与部署配置', tests: sec7Tests },
   ];
 
   for (const group of groups) {

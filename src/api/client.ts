@@ -22,6 +22,25 @@ const RETRY_CONFIG: RetryConfig = {
   retryableStatus: [429, 500, 502, 503, 504],
 };
 
+/**
+ * 解析 Retry-After 头（支持秒数和 HTTP-date 两种格式）
+ * 返回等待毫秒数，无法解析时返回 null
+ */
+function parseRetryAfter(value: string): number | null {
+  // 尝试解析为秒数（纯数字字符串）
+  const seconds = Number(value);
+  if (!Number.isNaN(seconds) && seconds > 0) {
+    return seconds * 1000;
+  }
+  // 尝试解析为 HTTP-date
+  const dateMs = Date.parse(value);
+  if (!Number.isNaN(dateMs)) {
+    const delayMs = dateMs - Date.now();
+    return delayMs > 0 ? delayMs : null;
+  }
+  return null;
+}
+
 // Simple rate limiter
 class RateLimiter {
   private timestamps: number[] = [];
@@ -33,7 +52,11 @@ class RateLimiter {
     this.windowMs = windowMs;
   }
 
-  async acquire(): Promise<void> {
+  async acquire(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) {
+      throw new DOMException('Rate limit wait aborted', 'AbortError');
+    }
+
     const now = Date.now();
     this.timestamps = this.timestamps.filter(t => now - t < this.windowMs);
 
@@ -41,15 +64,27 @@ class RateLimiter {
       const oldestTimestamp = this.timestamps[0];
       const waitTime = this.windowMs - (now - oldestTimestamp);
       logger.debug({ waitTime }, 'Rate limit reached, waiting');
-      await this.sleep(waitTime);
-      return this.acquire();
+      await this.sleep(waitTime, signal);
+      return this.acquire(signal);
     }
 
     this.timestamps.push(now);
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  private sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new DOMException('Rate limit wait aborted', 'AbortError'));
+        return;
+      }
+      const timer = setTimeout(resolve, ms);
+      if (signal) {
+        signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(new DOMException('Rate limit wait aborted', 'AbortError'));
+        }, { once: true });
+      }
+    });
   }
 }
 
@@ -80,8 +115,22 @@ export class PingCodeApiClient {
       });
     }
 
-    // Wait for rate limiter
-    await this.rateLimiter.acquire();
+    // Wait for rate limiter (with timeout to prevent indefinite blocking)
+    const rateLimitController = new AbortController();
+    const rateLimitTimeout = setTimeout(
+      () => rateLimitController.abort(),
+      config.requestTimeout
+    );
+    try {
+      await this.rateLimiter.acquire(rateLimitController.signal);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error(`Rate limit wait timed out after ${config.requestTimeout}ms: ${endpoint}`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(rateLimitTimeout);
+    }
 
     const startTime = Date.now();
     let lastError: Error | null = null;
@@ -113,8 +162,9 @@ export class PingCodeApiClient {
             let delay: number;
             if (response.status === 429) {
               const retryAfter = response.headers.get('retry-after');
-              delay = retryAfter
-                ? Math.min(parseInt(retryAfter, 10) * 1000, RETRY_CONFIG.maxDelay)
+              const parsedRetryMs = retryAfter ? parseRetryAfter(retryAfter) : null;
+              delay = parsedRetryMs !== null
+                ? Math.min(parsedRetryMs, RETRY_CONFIG.maxDelay)
                 : Math.min(RETRY_CONFIG.baseDelay * Math.pow(2, attempt), RETRY_CONFIG.maxDelay);
             } else {
               delay = Math.min(

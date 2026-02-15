@@ -12,8 +12,8 @@ const DEFAULT_PAGE_SIZE = 100;
 export const ListUsersInputSchema = z.object({
   keyword: z.string().optional(),
   // 新分页参数
-  page_size: z.number().optional(),
-  page_index: z.number().optional().default(1),
+  page_size: z.number().min(1).optional(),
+  page_index: z.number().min(1).optional().default(1),
   // 兼容旧参数
   limit: z.number().optional(),
 });

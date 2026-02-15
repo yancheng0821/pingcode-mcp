@@ -19,6 +19,8 @@ const ConfigSchema = z.object({
   server: z.object({
     transportMode: z.enum(['stdio', 'http']).default('stdio'),
     httpPort: z.number().default(3000),
+    httpMaxSessions: z.number().default(100),
+    httpSessionTtlMs: z.number().default(30 * 60 * 1000), // 30 min
   }),
 
   // Auth (HTTP 模式鉴权)
@@ -73,6 +75,8 @@ function loadConfig(): Config {
     server: {
       transportMode: process.env.TRANSPORT_MODE,
       httpPort: process.env.HTTP_PORT ? parseInt(process.env.HTTP_PORT, 10) : undefined,
+      httpMaxSessions: process.env.HTTP_MAX_SESSIONS ? parseInt(process.env.HTTP_MAX_SESSIONS, 10) : undefined,
+      httpSessionTtlMs: process.env.HTTP_SESSION_TTL_MS ? parseInt(process.env.HTTP_SESSION_TTL_MS, 10) : undefined,
     },
     auth: {
       apiKey: process.env.MCP_API_KEY,

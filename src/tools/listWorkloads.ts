@@ -338,6 +338,10 @@ export const listWorkloadsToolDefinition = {
                 },
                 required: ['start', 'end'],
             },
+            filter_project_id: {
+                type: 'string',
+                description: '按项目 ID 过滤（本地过滤，可与其他过滤条件组合）',
+            },
             filter_work_item_id: {
                 type: 'string',
                 description: '按工作项 ID 过滤（本地过滤，可与其他过滤条件组合）',
